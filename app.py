@@ -25,6 +25,37 @@ import pandas as pd
 import json
 import math
 from io import BytesIO
+from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
+
+# ─── GOOGLE SHEETS LOGGER ───────────────────────────────────────────────────
+def log_to_sheets(proj, total_waste, total_gwp, circ_aggregate, total_ap, total_ep):
+    try:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets",
+                  "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=scopes
+        )
+        client = gspread.authorize(creds)
+        sheet_name = st.secrets["sheets"]["spreadsheet_name"]
+        sheet = client.open(sheet_name).sheet1
+        row = [
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            proj.get("name", ""),
+            proj.get("location", ""),
+            proj.get("construction_type", ""),
+            proj.get("building_type", ""),
+            proj.get("builtup_area", ""),
+            round(total_waste, 3),
+            round(total_gwp, 3),
+            round(circ_aggregate * 100, 1),
+            round(total_ap, 4),
+            round(total_ep, 4),
+        ]
+        sheet.append_row(row)
+    except Exception as e:
+        st.warning(f"Could not log to Google Sheets: {e}")
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -1579,6 +1610,19 @@ def page_emissions_eol():
                 "circ_aggregate": circ_aggregate,
                 "benefits": benefits,
             }
+            # ── Log to Google Sheets ──────────────────────────────────────
+            total_waste_log = sum(r["qty_t"] for r in emission_results.values())
+            total_gwp_log   = sum(r["total_gwp"] for r in emission_results.values()) / 1000.0
+            total_ap_log    = sum(r["AP"] for r in emission_results.values())
+            total_ep_log    = sum(r["EP"] for r in emission_results.values())
+            log_to_sheets(
+                st.session_state.project,
+                total_waste_log,
+                total_gwp_log,
+                circ_aggregate,
+                total_ap_log,
+                total_ep_log,
+            )
             go(5); st.rerun()
 
 
