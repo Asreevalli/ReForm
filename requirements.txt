@@ -1,4 +1,7 @@
-streamlit
+streamlit==1.56.0
 pandas
+numpy
 reportlab
-openpyxl
+pydeck
+gspread
+google-auth
