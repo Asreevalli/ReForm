@@ -66,12 +66,23 @@ def _get_firestore_client():
     """Initialise Firebase app once per Streamlit session and return Firestore client."""
     import firebase_admin
     from firebase_admin import credentials as fb_credentials, firestore as fb_firestore
-    if not firebase_admin._apps:
-        # Must convert Streamlit AttrDict to a plain Python dict for firebase_admin
+    try:
         fb_info = {k: v for k, v in st.secrets["firebase"].items()}
+    except Exception as e:
+        raise RuntimeError(f"Step 1 FAILED - reading firebase secret: {e}")
+    try:
         fb_cred = fb_credentials.Certificate(fb_info)
-        firebase_admin.initialize_app(fb_cred)
-    return fb_firestore.client()
+    except Exception as e:
+        raise RuntimeError(f"Step 2 FAILED - Certificate({list(fb_info.keys())}): {e}")
+    try:
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(fb_cred)
+    except Exception as e:
+        raise RuntimeError(f"Step 3 FAILED - initialize_app: {e}")
+    try:
+        return fb_firestore.client()
+    except Exception as e:
+        raise RuntimeError(f"Step 4 FAILED - firestore.client(): {e}")
 
 
 def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
@@ -187,7 +198,9 @@ def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
         db.collection("submissions").document(doc_id).set(doc)
 
     except Exception as e:
-        st.warning(f"⚠️ Firestore log failed: {e}")
+        st.error(f"🔴 Firestore log failed at: {e}")
+        import traceback
+        st.code(traceback.format_exc())
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
