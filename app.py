@@ -1770,15 +1770,83 @@ def page_emissions_eol():
                 total_ep_log,
             )
             # ── Log full data to Firestore ────────────────────────────────
-            log_to_firestore(
-                proj=st.session_state.project,
-                waste_table=waste_table,
-                emission_inputs=ei,
-                emission_results=emission_results,
-                circ_scores=circ_scores,
-                circ_aggregate=circ_aggregate,
-                benefits=benefits,
-            )
+            # Run BEFORE go(5)/rerun so any error shows on THIS page
+            try:
+                db = _get_firestore_client()
+                safe_name = st.session_state.project.get("name","unknown").replace(" ","_")[:30]
+                doc_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_name
+
+                waste_doc = {mat: round(r["qty_t"],3) for mat, r in emission_results.items()}
+                eol_doc   = {mat: r.get("eol",{})     for mat, r in emission_results.items()}
+                em_doc    = {mat: {
+                    "qty_t": round(r["qty_t"],3),
+                    "A1_A3": round(r.get("A1A3",0),2),
+                    "A4":    round(r.get("A4",0),2),
+                    "A5":    round(r.get("A5",0),2),
+                    "C1":    round(r.get("C1",0),2),
+                    "C2":    round(r.get("C2",0),2),
+                    "C3":    round(r.get("C3",0),2),
+                    "C4":    round(r.get("C4",0),2),
+                    "total_gwp": round(r.get("total_gwp",0),2),
+                    "AP":    round(r.get("AP",0),4),
+                    "EP":    round(r.get("EP",0),4),
+                } for mat, r in emission_results.items()}
+                ben_doc   = {mat: {
+                    "recycled_t":              round(b.get("recycled_t",0),3),
+                    "reused_t":                round(b.get("reused_t",0),3),
+                    "landfill_t":              round(b.get("landfill_t",0),3),
+                    "landfill_diverted_t":     round(b.get("landfill_diverted_t",0),3),
+                    "avoided_emission_kgco2e": round(b.get("avoided_emission_kgco2e",0),2),
+                    "virgin_savings_inr":      round(b.get("virgin_material_savings_inr",0),0),
+                    "landfill_cost_saved_inr": round(b.get("landfill_cost_saved_inr",0),0),
+                    "landfill_cost_per_tonne": b.get("landfill_cost_per_tonne",0),
+                } for mat, b in benefits.items()}
+                trans_doc = {mat: {
+                    "vehicle":    ei.get(mat,{}).get("vehicle",""),
+                    "dist_a4_km": ei.get(mat,{}).get("distance_km",0),
+                    "dist_c2_km": ei.get(mat,{}).get("distance_km_c2",0),
+                    "sub_type":   ei.get(mat,{}).get("sub_type",""),
+                } for mat in emission_results}
+
+                doc = {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "project": {
+                        "name":              st.session_state.project.get("name",""),
+                        "location":          st.session_state.project.get("location",""),
+                        "construction_type": st.session_state.project.get("construction_type",""),
+                        "building_type":     st.session_state.project.get("building_type",""),
+                        "builtup_area_m2":   st.session_state.project.get("builtup_area",0),
+                        "plot_area_m2":      st.session_state.project.get("plot_area",0),
+                        "input_method":      st.session_state.get("input_method",""),
+                    },
+                    "waste_table_tonnes":     waste_doc,
+                    "transport_inputs":       trans_doc,
+                    "emissions_per_material": em_doc,
+                    "eol_scenarios":          eol_doc,
+                    "circularity": {
+                        "scores_per_material": {m: round(s,3) for m,s in circ_scores.items()},
+                        "aggregate_score":     round(circ_aggregate*100,1),
+                    },
+                    "benefits_per_material":  ben_doc,
+                    "summary": {
+                        "total_waste_t":            round(total_waste_log,3),
+                        "total_gwp_tco2e":          round(total_gwp_log,4),
+                        "total_ap_kgso2e":          round(total_ap_log,4),
+                        "total_ep_kgpo4e":          round(total_ep_log,6),
+                        "circularity_score_0_100":  round(circ_aggregate*100,1),
+                        "total_avoided_em_kgco2e":  round(sum(b["avoided_emission_kgco2e"] for b in benefits.values()),2),
+                        "total_virgin_savings_inr": round(sum(b["virgin_material_savings_inr"] for b in benefits.values()),0),
+                        "total_lf_cost_saved_inr":  round(sum(b["landfill_cost_saved_inr"] for b in benefits.values()),0),
+                        "total_landfill_diverted_t":round(sum(b["landfill_diverted_t"] for b in benefits.values()),3),
+                    },
+                }
+                db.collection("submissions").document(doc_id).set(doc)
+            except Exception as _fe:
+                import traceback as _tb
+                st.error(f"🔴 Firestore FAILED: {_fe}")
+                st.code(_tb.format_exc())
+                st.stop()   # stop here so error is visible — don't proceed to results
+
             go(5); st.rerun()
 
 
