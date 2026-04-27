@@ -28,18 +28,19 @@ from io import BytesIO
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
-import firebase_admin
-from firebase_admin import credentials as fb_credentials, firestore
+# firebase_admin imported lazily inside _get_firestore_client() to avoid
+# crashing the app if the package is still being installed
 
 # ─── GOOGLE SHEETS LOGGER ───────────────────────────────────────────────────
 def log_to_sheets(proj, total_waste, total_gwp, circ_aggregate, total_ap, total_ep):
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets",
                   "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"], scopes=scopes
-        )
-        client = gspread.authorize(creds)
+        # Convert Streamlit secrets to plain dict for google-auth
+        sa_info = {k: v for k, v in st.secrets["gcp_service_account"].items()}
+        creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
+        client = gspread.Client(auth=creds)
+        client.session = gspread.auth.AuthorizedSession(creds)
         sheet_name = st.secrets["sheets"]["spreadsheet_name"]
         sheet = client.open(sheet_name).sheet1
         row = [
@@ -57,16 +58,20 @@ def log_to_sheets(proj, total_waste, total_gwp, circ_aggregate, total_ap, total_
         ]
         sheet.append_row(row)
     except Exception as e:
-        pass  # silent — never interrupt the user
+        st.warning(f"⚠️ Google Sheets log failed: {e}")
 
 
 # ─── FIRESTORE LOGGER ────────────────────────────────────────────────────────
 def _get_firestore_client():
     """Initialise Firebase app once per Streamlit session and return Firestore client."""
+    import firebase_admin
+    from firebase_admin import credentials as fb_credentials, firestore as fb_firestore
     if not firebase_admin._apps:
-        fb_cred = fb_credentials.Certificate(dict(st.secrets["firebase"]))
+        # Must convert Streamlit AttrDict to a plain Python dict for firebase_admin
+        fb_info = {k: v for k, v in st.secrets["firebase"].items()}
+        fb_cred = fb_credentials.Certificate(fb_info)
         firebase_admin.initialize_app(fb_cred)
-    return firestore.client()
+    return fb_firestore.client()
 
 
 def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
@@ -181,8 +186,8 @@ def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
 
         db.collection("submissions").document(doc_id).set(doc)
 
-    except Exception:
-        pass  # silent — never interrupt the user
+    except Exception as e:
+        st.warning(f"⚠️ Firestore log failed: {e}")
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
