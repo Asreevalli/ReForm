@@ -28,166 +28,206 @@ from io import BytesIO
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
-# firebase_admin imported lazily inside _get_firestore_client() to avoid
-# crashing the app if the package is still being installed
+import firebase_admin
+from firebase_admin import credentials as fb_credentials, firestore
 
 # ─── GOOGLE SHEETS LOGGER ───────────────────────────────────────────────────
-def log_to_sheets(proj, total_waste, total_gwp, circ_aggregate, total_ap, total_ep):
+# ─── SHARED: build formatted report string ──────────────────────────────────
+def _build_report_string(proj, waste_table, emission_inputs, emission_results,
+                          circ_scores, circ_aggregate, benefits):
+    """Build the human-readable formatted report string stored in Firestore."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = []
+    lines.append(f"Project submitted: {ts}")
+    lines.append("")
+
+    # PROJECT INFO
+    lines.append("─── PROJECT INFO ───────────────────────")
+    lines.append(f"  Name:          {proj.get('name','')}")
+    lines.append(f"  City:          {proj.get('location','')}")
+    lines.append(f"  Type:          {proj.get('construction_type','')}")
+    lines.append(f"  Building Type: {proj.get('building_type','')}")
+    lines.append(f"  Built-up Area: {proj.get('builtup_area','')} m²")
+    lines.append(f"  Plot Area:     {proj.get('plot_area','')} m²")
+    lines.append(f"  Input Method:  {proj.get('input_method','')}")
+    lines.append("")
+
+    # WASTE TABLE
+    lines.append("─── WASTE TABLE ────────────────────────")
+    for row in waste_table:
+        mat = row["material"]
+        qty = row["waste_tonnes"]
+        lines.append(f"  {mat:<20} {qty:.2f} t")
+    lines.append("")
+
+    # TRANSPORT INPUTS
+    lines.append("─── TRANSPORT INPUTS ───────────────────")
+    for mat, ei in emission_inputs.items():
+        veh   = ei.get("vehicle", "")
+        da4   = ei.get("distance_km", 0)
+        dc2   = ei.get("distance_km_c2", 0)
+        sub   = ei.get("sub_type", "")
+        lines.append(f"  {mat:<20} {veh} | {da4} km to site | {dc2} km to EOL | sub-type: {sub}")
+    lines.append("")
+
+    # EMISSIONS PER MATERIAL
+    lines.append("─── EMISSIONS (per material) ───────────")
+    for mat, r in emission_results.items():
+        a1a3 = round(r.get("A1A3", 0), 1)
+        a4   = round(r.get("A4",   0), 1)
+        a5   = round(r.get("A5",   0), 1)
+        c1   = round(r.get("C1",   0), 1)
+        c2   = round(r.get("C2",   0), 1)
+        c3   = round(r.get("C3",   0), 1)
+        c4   = round(r.get("C4",   0), 1)
+        ap   = round(r.get("AP",   0), 2)
+        ep   = round(r.get("EP",   0), 4)
+        lines.append(
+            f"  {mat:<20} A1-A3: {a1a3:,.1f} kg | A4: {a4} | A5: {a5} | "
+            f"C1: {c1} | C2: {c2} | C3: {c3} | C4: {c4} | AP: {ap} | EP: {ep}"
+        )
+    lines.append("")
+
+    # EOL SCENARIOS
+    lines.append("─── EOL SCENARIOS ──────────────────────")
+    for mat, r in emission_results.items():
+        eol = r.get("eol", {})
+        rec  = eol.get("Recycle", 0)
+        reus = eol.get("Reuse", 0)
+        lf   = eol.get("Landfill", 0)
+        inc  = eol.get("Incineration", 0)
+        oth  = eol.get("Other", 0)
+        lines.append(
+            f"  {mat:<20} Recycle {rec}% | Reuse {reus}% | "
+            f"Landfill {lf}% | Incineration {inc}% | Other {oth}%"
+        )
+    lines.append("")
+
+    # CIRCULARITY SCORES
+    lines.append("─── CIRCULARITY SCORES ─────────────────")
+    for mat, score in circ_scores.items():
+        lines.append(f"  {mat:<20} MCI: {round(score*100,1)} / 100")
+    lines.append("")
+
+    # BENEFITS PER MATERIAL
+    lines.append("─── MATERIAL BENEFITS ──────────────────")
+    for mat, b in benefits.items():
+        rec_t  = round(b.get("recycled_t", 0), 2)
+        reu_t  = round(b.get("reused_t", 0), 2)
+        lf_t   = round(b.get("landfill_t", 0), 2)
+        av_em  = round(b.get("avoided_emission_kgco2e", 0), 2)
+        v_sav  = round(b.get("virgin_material_savings_inr", 0), 0)
+        lf_sav = round(b.get("landfill_cost_saved_inr", 0), 0)
+        lines.append(
+            f"  {mat:<20} Recycled: {rec_t} t | Reused: {reu_t} t | "
+            f"Landfilled: {lf_t} t | Avoided: {av_em} kg CO₂e | "
+            f"Virgin Savings: ₹{v_sav:,.0f} | LF Cost Saved: ₹{lf_sav:,.0f}"
+        )
+    lines.append("")
+
+    # SUMMARY RESULTS
+    total_waste   = sum(r["qty_t"]     for r in emission_results.values())
+    total_gwp     = sum(r["total_gwp"] for r in emission_results.values()) / 1000.0
+    total_ap      = sum(r["AP"]        for r in emission_results.values())
+    total_ep      = sum(r["EP"]        for r in emission_results.values())
+    total_avoided = sum(b.get("avoided_emission_kgco2e", 0) for b in benefits.values()) / 1000.0
+    total_vsav    = sum(b.get("virgin_material_savings_inr", 0) for b in benefits.values())
+    total_lfsav   = sum(b.get("landfill_cost_saved_inr", 0) for b in benefits.values())
+    total_lfdiv   = sum(b.get("landfill_diverted_t", 0) for b in benefits.values())
+
+    lines.append("─── RESULTS ────────────────────────────")
+    lines.append(f"  Total Waste:        {total_waste:.2f} t")
+    lines.append(f"  Total GWP:          {total_gwp:.3f} tCO₂e")
+    lines.append(f"  Total AP:           {total_ap:.2f} kg SO₂e")
+    lines.append(f"  Total EFW:          {total_ep:.4f} kg PO₄e")
+    lines.append(f"  Circularity Score:  {round(circ_aggregate*100,1)} / 100")
+    lines.append(f"  Avoided Emissions:  {total_avoided:.3f} tCO₂e")
+    lines.append(f"  Virgin Mat Savings: ₹{total_vsav:,.0f}")
+    lines.append(f"  Landfill Cost Saved:₹{total_lfsav:,.0f}")
+    lines.append(f"  Landfill Diverted:  {total_lfdiv:.2f} t")
+
+    return "\n".join(lines)
+
+
+
+# ─── GOOGLE SHEETS LOGGER — summary row ──────────────────────────────────────
+def log_to_sheets(proj, emission_results, circ_aggregate, benefits):
+    """Write one summary row per submission. Headers auto-created if sheet is empty."""
     try:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets",
-                  "https://www.googleapis.com/auth/drive"]
-        # Convert Streamlit secrets to plain dict for google-auth
+        scopes  = ["https://www.googleapis.com/auth/spreadsheets",
+                   "https://www.googleapis.com/auth/drive"]
         sa_info = {k: v for k, v in st.secrets["gcp_service_account"].items()}
-        creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
-        client = gspread.Client(auth=creds)
+        creds   = Credentials.from_service_account_info(sa_info, scopes=scopes)
+        client  = gspread.Client(auth=creds)
         client.session = gspread.auth.AuthorizedSession(creds)
-        sheet_name = st.secrets["sheets"]["spreadsheet_name"]
-        sheet = client.open(sheet_name).sheet1
-        row = [
+        sheet   = client.open(st.secrets["sheets"]["spreadsheet_name"]).sheet1
+
+        # Auto-create header row if sheet is empty
+        if not sheet.row_values(1):
+            sheet.append_row([
+                "Timestamp","Project Name","City","Project Type","Building Type",
+                "Built-up Area (m2)","Plot Area (m2)","Input Method",
+                "Total Waste (t)","Total GWP (tCO2e)","Total AP (kg SO2e)",
+                "Total EP (kg PO4e)","Circularity Score","Avoided Emissions (tCO2e)",
+                "Virgin Mat Savings (INR)","Landfill Diverted (t)","Landfill Cost Saved (INR)",
+            ])
+
+        total_waste   = round(sum(r["qty_t"]     for r in emission_results.values()), 3)
+        total_gwp     = round(sum(r["total_gwp"] for r in emission_results.values()) / 1000.0, 4)
+        total_ap      = round(sum(r["AP"]        for r in emission_results.values()), 4)
+        total_ep      = round(sum(r["EP"]        for r in emission_results.values()), 6)
+        total_avoided = round(sum(b.get("avoided_emission_kgco2e",0)    for b in benefits.values()) / 1000.0, 4)
+        total_vsav    = round(sum(b.get("virgin_material_savings_inr",0) for b in benefits.values()), 0)
+        total_lfdiv   = round(sum(b.get("landfill_diverted_t",0)         for b in benefits.values()), 3)
+        total_lfsav   = round(sum(b.get("landfill_cost_saved_inr",0)     for b in benefits.values()), 0)
+
+        sheet.append_row([
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            proj.get("name", ""),
-            proj.get("location", ""),
-            proj.get("construction_type", ""),
-            proj.get("building_type", ""),
-            proj.get("builtup_area", ""),
-            round(total_waste, 3),
-            round(total_gwp, 3),
-            round(circ_aggregate * 100, 1),
-            round(total_ap, 4),
-            round(total_ep, 4),
-        ]
-        sheet.append_row(row)
-    except Exception as e:
-        st.warning(f"⚠️ Google Sheets log failed: {e}")
+            proj.get("name",""),       proj.get("location",""),
+            proj.get("construction_type",""), proj.get("building_type",""),
+            proj.get("builtup_area",""),      proj.get("plot_area",""),
+            proj.get("input_method",""),
+            total_waste, total_gwp, total_ap, total_ep,
+            round(circ_aggregate*100,1),
+            total_avoided, total_vsav, total_lfdiv, total_lfsav,
+        ], value_input_option="USER_ENTERED")
+    except Exception:
+        pass  # silent — never interrupt the user
 
 
-# ─── FIRESTORE LOGGER ────────────────────────────────────────────────────────
+# ─── FIRESTORE LOGGER — full formatted report ────────────────────────────────
 def _get_firestore_client():
-    """Initialise Firebase app once per Streamlit session and return Firestore client."""
+    """Initialise Firebase app once per session and return Firestore client."""
     import firebase_admin
-    from firebase_admin import credentials as fb_credentials, firestore as fb_firestore
+    from firebase_admin import credentials as _fb_creds, firestore as _fb_fs
     if not firebase_admin._apps:
-        # Must convert Streamlit AttrDict to a plain Python dict for firebase_admin
-        fb_info = {k: v for k, v in st.secrets["firebase"].items()}
-        fb_cred = fb_credentials.Certificate(fb_info)
-        firebase_admin.initialize_app(fb_cred)
-    return fb_firestore.client()
+        info = {k: v for k, v in st.secrets["firebase"].items()}
+        firebase_admin.initialize_app(_fb_creds.Certificate(info))
+    return _fb_fs.client()
 
 
 def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
                      circ_scores, circ_aggregate, benefits):
-    """
-    Write a complete submission document to Firestore collection 'submissions'.
-    Captures every input and output — nothing summarised or dropped.
-    Fires silently; never raises to the user.
-    """
+    """Store full formatted report in Firestore collection 'submissions'."""
     try:
         db = _get_firestore_client()
 
-        # ── Summary numbers ───────────────────────────────────────────────
-        total_waste_t   = sum(r["qty_t"]     for r in emission_results.values())
-        total_gwp_tco2e = sum(r["total_gwp"] for r in emission_results.values()) / 1000.0
-        total_ap        = sum(r["AP"]        for r in emission_results.values())
-        total_ep        = sum(r["EP"]        for r in emission_results.values())
-        total_avoided   = sum(b["avoided_emission_kgco2e"]    for b in benefits.values())
-        total_vsavings  = sum(b["virgin_material_savings_inr"] for b in benefits.values())
-        total_lf_saved  = sum(b["landfill_cost_saved_inr"]    for b in benefits.values())
-        total_diverted  = sum(b["landfill_diverted_t"]        for b in benefits.values())
+        report_str = _build_report_string(
+            proj, waste_table, emission_inputs, emission_results,
+            circ_scores, circ_aggregate, benefits
+        )
 
-        # ── Per-material emissions — every stage ─────────────────────────
-        emissions_doc = {}
-        for mat, r in emission_results.items():
-            emissions_doc[mat] = {
-                "qty_t":     round(r["qty_t"], 3),
-                "A1_A3":     round(r.get("A1_A3", 0), 2),
-                "A4":        round(r.get("A4",   0), 2),
-                "A5":        round(r.get("A5",   0), 2),
-                "C1":        round(r.get("C1",   0), 2),
-                "C2":        round(r.get("C2",   0), 2),
-                "C3":        round(r.get("C3",   0), 2),
-                "C4":        round(r.get("C4",   0), 2),
-                "total_gwp": round(r.get("total_gwp", 0), 2),
-                "AP":        round(r.get("AP",   0), 4),
-                "EP":        round(r.get("EP",   0), 4),
-            }
+        safe_name = proj.get("name","unknown").replace(" ","_")[:30]
+        doc_id    = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_name
 
-        # ── Per-material EOL scenarios ────────────────────────────────────
-        eol_doc = {}
-        for mat, r in emission_results.items():
-            eol_doc[mat] = r.get("eol", {})
-
-        # ── Per-material transport inputs ─────────────────────────────────
-        transport_doc = {}
-        for mat, ei_row in emission_inputs.items():
-            transport_doc[mat] = {
-                "vehicle":      ei_row.get("vehicle", ""),
-                "dist_a4_km":   ei_row.get("dist_a4", 0),
-                "dist_c2_km":   ei_row.get("dist_c2", 0),
-                "sub_type":     ei_row.get("sub_type", ""),
-            }
-
-        # ── Per-material circularity benefits ─────────────────────────────
-        benefits_doc = {}
-        for mat, b in benefits.items():
-            benefits_doc[mat] = {
-                "recycled_t":               round(b.get("recycled_t", 0), 3),
-                "reused_t":                 round(b.get("reused_t", 0), 3),
-                "landfill_t":               round(b.get("landfill_t", 0), 3),
-                "landfill_diverted_t":      round(b.get("landfill_diverted_t", 0), 3),
-                "avoided_emission_kgco2e":  round(b.get("avoided_emission_kgco2e", 0), 2),
-                "virgin_savings_inr":       round(b.get("virgin_material_savings_inr", 0), 0),
-                "landfill_cost_saved_inr":  round(b.get("landfill_cost_saved_inr", 0), 0),
-                "landfill_cost_per_tonne":  b.get("landfill_cost_per_tonne", 0),
-            }
-
-        # ── Waste table (material quantities) ────────────────────────────
-        waste_doc = {}
-        for mat, qty in waste_table.items():
-            waste_doc[mat] = round(qty, 3) if isinstance(qty, float) else qty
-
-        # ── Assemble the full document ────────────────────────────────────
-        doc = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "project": {
-                "name":              proj.get("name", ""),
-                "location":          proj.get("location", ""),
-                "construction_type": proj.get("construction_type", ""),
-                "building_type":     proj.get("building_type", ""),
-                "builtup_area_m2":   proj.get("builtup_area", 0),
-                "plot_area_m2":      proj.get("plot_area", 0),
-                "floors":            proj.get("floors", ""),
-                "input_method":      proj.get("input_method", ""),
-            },
-            "waste_table_tonnes":    waste_doc,
-            "transport_inputs":      transport_doc,
-            "emissions_per_material": emissions_doc,
-            "eol_scenarios":         eol_doc,
-            "circularity": {
-                "scores_per_material": {m: round(s, 3) for m, s in circ_scores.items()},
-                "aggregate_score":     round(circ_aggregate * 100, 1),
-            },
-            "benefits_per_material": benefits_doc,
-            "summary": {
-                "total_waste_t":           round(total_waste_t, 3),
-                "total_gwp_tco2e":         round(total_gwp_tco2e, 4),
-                "total_ap_kgso2e":         round(total_ap, 4),
-                "total_ep_kgpo4e":         round(total_ep, 6),
-                "circularity_score_0_100": round(circ_aggregate * 100, 1),
-                "total_avoided_em_kgco2e": round(total_avoided, 2),
-                "total_virgin_savings_inr": round(total_vsavings, 0),
-                "total_lf_cost_saved_inr":  round(total_lf_saved, 0),
-                "total_landfill_diverted_t": round(total_diverted, 3),
-            },
-        }
-
-        # ── Document ID = timestamp + project name (URL-safe) ─────────────
-        safe_name = proj.get("name", "unknown").replace(" ", "_")[:30]
-        doc_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_name
-
-        db.collection("submissions").document(doc_id).set(doc)
-
-    except Exception as e:
-        st.warning(f"⚠️ Firestore log failed: {e}")
+        db.collection("submissions").document(doc_id).set({
+            "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "project_name": proj.get("name",""),
+            "city":         proj.get("location",""),
+            "report":       report_str,
+        })
+    except Exception:
+        pass  # silent — never interrupt the user
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -1742,21 +1782,14 @@ def page_emissions_eol():
                 "circ_aggregate": circ_aggregate,
                 "benefits": benefits,
             }
-            # ── Log to Google Sheets ──────────────────────────────────────
-            total_waste_log = sum(r["qty_t"] for r in emission_results.values())
-            total_gwp_log   = sum(r["total_gwp"] for r in emission_results.values()) / 1000.0
-            total_ap_log    = sum(r["AP"] for r in emission_results.values())
-            total_ep_log    = sum(r["EP"] for r in emission_results.values())
-            # ── Log summary to Google Sheets ─────────────────────────
+            # ── Log summary row to Google Sheets (silent) ────────────
             log_to_sheets(
-                st.session_state.project,
-                total_waste_log,
-                total_gwp_log,
-                circ_aggregate,
-                total_ap_log,
-                total_ep_log,
+                proj=st.session_state.project,
+                emission_results=emission_results,
+                circ_aggregate=circ_aggregate,
+                benefits=benefits,
             )
-            # ── Log full data to Firestore ────────────────────────────────
+            # ── Log full formatted report to Firestore (silent) ──────────
             log_to_firestore(
                 proj=st.session_state.project,
                 waste_table=waste_table,
