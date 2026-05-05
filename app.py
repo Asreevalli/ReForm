@@ -158,8 +158,7 @@ def log_to_sheets(proj, waste_table, emission_inputs, emission_results, circ_sco
                    "https://www.googleapis.com/auth/drive"]
         sa_info = {k: v for k, v in st.secrets["gcp_service_account"].items()}
         creds   = Credentials.from_service_account_info(sa_info, scopes=scopes)
-        client  = gspread.Client(auth=creds)
-        client.session = gspread.auth.AuthorizedSession(creds)
+        client  = gspread.authorize(creds)
         sheet   = client.open(st.secrets["sheets"]["spreadsheet_name"]).sheet1
 
         ALL_MATS = ["Concrete","Brick/Masonry","Soil/Sand/Gravel","Steel/Metal",
@@ -396,9 +395,7 @@ st.markdown("""
 
 html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 
-.block-container { padding-top: 1rem !important; padding-bottom: 2rem; max-width: 1100px; }
-/* ensure Streamlit header does not overlap content */
-section[data-testid="stMain"] > div:first-child { padding-top: 0.5rem !important; }
+.block-container { padding-top: 4rem !important; padding-bottom: 2rem; max-width: 1100px; }
 
 .page-title { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: #1a1a2e; margin-bottom: 0.2rem; }
 .page-sub   { color: #6b7280; font-size: 0.95rem; margin-bottom: 1.5rem; }
