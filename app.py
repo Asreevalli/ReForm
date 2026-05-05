@@ -150,9 +150,9 @@ def _build_report_string(proj, waste_table, emission_inputs, emission_results,
 
 
 
-# ─── GOOGLE SHEETS LOGGER — summary row ──────────────────────────────────────
-def log_to_sheets(proj, emission_results, circ_aggregate, benefits):
-    """Write one summary row per submission. Headers auto-created if sheet is empty."""
+# ─── GOOGLE SHEETS LOGGER — full inputs + summary row ────────────────────────
+def log_to_sheets(proj, waste_table, emission_inputs, emission_results, circ_scores, circ_aggregate, benefits):
+    """Write one row per submission: project info, all material inputs, all results."""
     try:
         scopes  = ["https://www.googleapis.com/auth/spreadsheets",
                    "https://www.googleapis.com/auth/drive"]
@@ -162,16 +162,60 @@ def log_to_sheets(proj, emission_results, circ_aggregate, benefits):
         client.session = gspread.auth.AuthorizedSession(creds)
         sheet   = client.open(st.secrets["sheets"]["spreadsheet_name"]).sheet1
 
-        # Auto-create header row if sheet is empty
-        if not sheet.row_values(1):
-            sheet.append_row([
-                "Timestamp","Project Name","City","Project Type","Building Type",
-                "Built-up Area (m2)","Plot Area (m2)","Input Method",
-                "Total Waste (t)","Total GWP (tCO2e)","Total AP (kg SO2e)",
-                "Total EP (kg PO4e)","Circularity Score","Avoided Emissions (tCO2e)",
-                "Virgin Mat Savings (INR)","Landfill Diverted (t)","Landfill Cost Saved (INR)",
-            ])
+        ALL_MATS = ["Concrete","Brick/Masonry","Soil/Sand/Gravel","Steel/Metal",
+                    "Wood/Timber","Bitumen","Plastic","Glass","Others"]
 
+        # ── Auto-create header row ────────────────────────────────────────
+        if not sheet.row_values(1):
+            mat_waste_hdrs = [f"{m} Waste (t)" for m in ALL_MATS]
+            mat_sub_hdrs   = [f"{m} SubType"   for m in ALL_MATS]
+            mat_veh_hdrs   = [f"{m} Vehicle"   for m in ALL_MATS]
+            mat_d1_hdrs    = [f"{m} Dist_A4 (km)" for m in ALL_MATS]
+            mat_d2_hdrs    = [f"{m} Dist_C2 (km)" for m in ALL_MATS]
+            mat_rec_hdrs   = [f"{m} Recycle%"  for m in ALL_MATS]
+            mat_reu_hdrs   = [f"{m} Reuse%"    for m in ALL_MATS]
+            mat_lf_hdrs    = [f"{m} Landfill%" for m in ALL_MATS]
+            mat_inc_hdrs   = [f"{m} Incin%"    for m in ALL_MATS]
+            mat_gwp_hdrs   = [f"{m} GWP (kgCO2e)" for m in ALL_MATS]
+            mat_ap_hdrs    = [f"{m} AP (kgSO2e)"  for m in ALL_MATS]
+            mat_ep_hdrs    = [f"{m} EP (kgPO4e)"  for m in ALL_MATS]
+            mat_circ_hdrs  = [f"{m} Circ Score"   for m in ALL_MATS]
+            mat_avoid_hdrs = [f"{m} Avoided (tCO2e)" for m in ALL_MATS]
+            mat_vsav_hdrs  = [f"{m} Virgin Sav (INR)" for m in ALL_MATS]
+            mat_lfdiv_hdrs = [f"{m} LF Diverted (t)"  for m in ALL_MATS]
+            mat_lfsav_hdrs = [f"{m} LF Cost Saved (INR)" for m in ALL_MATS]
+
+            headers = (
+                ["Timestamp","Project Name","City","Project Type","Building Type",
+                 "Built-up Area (m2)","Plot Area (m2)","Input Method"] +
+                mat_waste_hdrs + mat_sub_hdrs + mat_veh_hdrs +
+                mat_d1_hdrs + mat_d2_hdrs +
+                mat_rec_hdrs + mat_reu_hdrs + mat_lf_hdrs + mat_inc_hdrs +
+                mat_gwp_hdrs + mat_ap_hdrs + mat_ep_hdrs +
+                mat_circ_hdrs + mat_avoid_hdrs + mat_vsav_hdrs +
+                mat_lfdiv_hdrs + mat_lfsav_hdrs +
+                ["Total Waste (t)","Total GWP (tCO2e)","Total AP (kgSO2e)",
+                 "Total EP (kgPO4e)","Circularity Score (/100)",
+                 "Avoided Emissions (tCO2e)","Virgin Mat Savings (INR)",
+                 "Landfill Diverted (t)","Landfill Cost Saved (INR)"]
+            )
+            sheet.append_row(headers, value_input_option="USER_ENTERED")
+
+        # ── Helper getters ────────────────────────────────────────────────
+        wt_lookup = {r["material"]: round(r["waste_tonnes"], 4) for r in waste_table}
+
+        def ei_v(mat, field, default=0):
+            return emission_inputs.get(mat, {}).get(field, default)
+        def eol_v(mat, field):
+            return emission_inputs.get(mat, {}).get("eol", {}).get(field, 0)
+        def er_v(mat, field):
+            v = emission_results.get(mat, {}).get(field, 0)
+            return round(v, 4) if v else 0
+        def ben_v(mat, field):
+            v = benefits.get(mat, {}).get(field, 0)
+            return round(v, 4) if v else 0
+
+        # ── Compute totals ────────────────────────────────────────────────
         total_waste   = round(sum(r["qty_t"]     for r in emission_results.values()), 3)
         total_gwp     = round(sum(r["total_gwp"] for r in emission_results.values()) / 1000.0, 4)
         total_ap      = round(sum(r["AP"]        for r in emission_results.values()), 4)
@@ -181,18 +225,38 @@ def log_to_sheets(proj, emission_results, circ_aggregate, benefits):
         total_lfdiv   = round(sum(b.get("landfill_diverted_t",0)         for b in benefits.values()), 3)
         total_lfsav   = round(sum(b.get("landfill_cost_saved_inr",0)     for b in benefits.values()), 0)
 
-        sheet.append_row([
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            proj.get("name",""),       proj.get("location",""),
-            proj.get("construction_type",""), proj.get("building_type",""),
-            proj.get("builtup_area",""),      proj.get("plot_area",""),
-            proj.get("input_method",""),
-            total_waste, total_gwp, total_ap, total_ep,
-            round(circ_aggregate*100,1),
-            total_avoided, total_vsav, total_lfdiv, total_lfsav,
-        ], value_input_option="USER_ENTERED")
-    except Exception:
-        pass  # silent — never interrupt the user
+        row = (
+            [datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             proj.get("name",""), proj.get("location",""),
+             proj.get("construction_type",""), proj.get("building_type",""),
+             proj.get("builtup_area",""), proj.get("plot_area",""),
+             proj.get("input_method","")] +
+            [wt_lookup.get(m, 0)          for m in ALL_MATS] +
+            [ei_v(m,"sub_type","")         for m in ALL_MATS] +
+            [ei_v(m,"vehicle","")          for m in ALL_MATS] +
+            [ei_v(m,"distance_km",0)       for m in ALL_MATS] +
+            [ei_v(m,"distance_km_c2",0)    for m in ALL_MATS] +
+            [eol_v(m,"Recycle")            for m in ALL_MATS] +
+            [eol_v(m,"Reuse")              for m in ALL_MATS] +
+            [eol_v(m,"Landfill")           for m in ALL_MATS] +
+            [eol_v(m,"Incineration")       for m in ALL_MATS] +
+            [er_v(m,"total_gwp")           for m in ALL_MATS] +
+            [er_v(m,"AP")                  for m in ALL_MATS] +
+            [er_v(m,"EP")                  for m in ALL_MATS] +
+            [round(circ_scores.get(m,0)*100,1) for m in ALL_MATS] +
+            [round(ben_v(m,"avoided_emission_kgco2e")/1000,4) for m in ALL_MATS] +
+            [ben_v(m,"virgin_material_savings_inr") for m in ALL_MATS] +
+            [ben_v(m,"landfill_diverted_t")         for m in ALL_MATS] +
+            [ben_v(m,"landfill_cost_saved_inr")     for m in ALL_MATS] +
+            [total_waste, total_gwp, total_ap, total_ep,
+             round(circ_aggregate*100,1),
+             total_avoided, total_vsav, total_lfdiv, total_lfsav]
+        )
+        sheet.append_row(row, value_input_option="USER_ENTERED")
+        return True
+    except Exception as e:
+        st.session_state["_sheets_error"] = str(e)
+        return False
 
 
 # ─── FIRESTORE LOGGER — full formatted report ────────────────────────────────
@@ -220,14 +284,102 @@ def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
         safe_name = proj.get("name","unknown").replace(" ","_")[:30]
         doc_id    = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_name
 
+        # ── Structured waste data ─────────────────────────────────────
+        waste_data = {
+            row["material"]: round(row["waste_tonnes"], 4)
+            for row in waste_table
+        }
+
+        # ── Structured transport + EOL inputs ────────────────────────────
+        inputs_data = {}
+        for mat, ei in emission_inputs.items():
+            inputs_data[mat.replace("/","_")] = {
+                "sub_type":      ei.get("sub_type",""),
+                "vehicle":       ei.get("vehicle",""),
+                "distance_A4_km": float(ei.get("distance_km", 0)),
+                "distance_C2_km": float(ei.get("distance_km_c2", 0)),
+                "eol_recycle_pct":    ei.get("eol",{}).get("Recycle",0),
+                "eol_reuse_pct":      ei.get("eol",{}).get("Reuse",0),
+                "eol_landfill_pct":   ei.get("eol",{}).get("Landfill",0),
+                "eol_incin_pct":      ei.get("eol",{}).get("Incineration",0),
+                "eol_other_pct":      ei.get("eol",{}).get("Other",0),
+            }
+
+        # ── Structured emission results per material ──────────────────────
+        emission_data = {}
+        for mat, r in emission_results.items():
+            emission_data[mat.replace("/","_")] = {
+                "waste_t":    round(r.get("qty_t",0), 4),
+                "A1A3_kgCO2e": round(r.get("A1A3",0), 2),
+                "A4_kgCO2e":   round(r.get("A4",0),   2),
+                "A5_kgCO2e":   round(r.get("A5",0),   2),
+                "C1_kgCO2e":   round(r.get("C1",0),   2),
+                "C2_kgCO2e":   round(r.get("C2",0),   2),
+                "C3_kgCO2e":   round(r.get("C3",0),   2),
+                "C4_kgCO2e":   round(r.get("C4",0),   2),
+                "total_GWP_kgCO2e": round(r.get("total_gwp",0), 2),
+                "AP_kgSO2e":   round(r.get("AP",0),   4),
+                "EP_kgPO4e":   round(r.get("EP",0),   6),
+                "circ_score":  round(circ_scores.get(mat,0)*100, 1),
+            }
+
+        # ── Structured benefits per material ──────────────────────────────
+        benefits_data = {}
+        for mat, b in benefits.items():
+            benefits_data[mat.replace("/","_")] = {
+                "recycled_t":            round(b.get("recycled_t",0), 4),
+                "reused_t":              round(b.get("reused_t",0),   4),
+                "landfill_t":            round(b.get("landfill_t",0), 4),
+                "landfill_diverted_t":   round(b.get("landfill_diverted_t",0), 4),
+                "avoided_emission_tCO2e":round(b.get("avoided_emission_kgco2e",0)/1000, 4),
+                "virgin_savings_INR":    round(b.get("virgin_material_savings_inr",0), 0),
+                "landfill_cost_saved_INR":round(b.get("landfill_cost_saved_inr",0), 0),
+                "landfill_cost_per_t":   b.get("landfill_cost_per_tonne",0),
+            }
+
+        # ── Summary totals ────────────────────────────────────────────────
+        summary = {
+            "total_waste_t":        round(sum(r["qty_t"]     for r in emission_results.values()), 3),
+            "total_GWP_tCO2e":      round(sum(r["total_gwp"] for r in emission_results.values())/1000, 4),
+            "total_AP_kgSO2e":      round(sum(r["AP"]        for r in emission_results.values()), 4),
+            "total_EP_kgPO4e":      round(sum(r["EP"]        for r in emission_results.values()), 6),
+            "circularity_score_100":round(circ_aggregate*100, 1),
+            "avoided_emissions_tCO2e": round(sum(b.get("avoided_emission_kgco2e",0) for b in benefits.values())/1000, 4),
+            "virgin_savings_INR":   round(sum(b.get("virgin_material_savings_inr",0) for b in benefits.values()), 0),
+            "landfill_diverted_t":  round(sum(b.get("landfill_diverted_t",0)         for b in benefits.values()), 3),
+            "landfill_cost_saved_INR": round(sum(b.get("landfill_cost_saved_inr",0)  for b in benefits.values()), 0),
+        }
+
         db.collection("submissions").document(doc_id).set({
+            # ── Identity ──────────────────────────────────────────────────
             "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "project_name": proj.get("name",""),
             "city":         proj.get("location",""),
-            "report":       report_str,
+            # ── Page 1: Project info ──────────────────────────────────────
+            "project_info": {
+                "name":              proj.get("name",""),
+                "city":              proj.get("location",""),
+                "project_type":      proj.get("construction_type",""),
+                "building_type":     proj.get("building_type",""),
+                "builtup_area_m2":   proj.get("builtup_area",0),
+                "plot_area_m2":      proj.get("plot_area",0),
+                "input_method":      proj.get("input_method",""),
+            },
+            # ── Page 3: Waste table ───────────────────────────────────────
+            "waste_inputs":    waste_data,
+            # ── Page 4: Transport + EOL inputs ───────────────────────────
+            "emission_inputs": inputs_data,
+            # ── Results: emissions per material ──────────────────────────
+            "emission_results": emission_data,
+            # ── Results: circularity benefits per material ────────────────
+            "benefits":        benefits_data,
+            # ── Results: summary totals ───────────────────────────────────
+            "summary":         summary,
+            # ── Human-readable report string (legacy) ─────────────────────
+            "report":          report_str,
         })
-    except Exception:
-        pass  # silent — never interrupt the user
+    except Exception as e:
+        st.session_state["_fire_error"] = str(e)
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -244,7 +396,9 @@ st.markdown("""
 
 html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 
-.block-container { padding-top: 2rem; padding-bottom: 2rem; max-width: 1100px; }
+.block-container { padding-top: 1rem !important; padding-bottom: 2rem; max-width: 1100px; }
+/* ensure Streamlit header does not overlap content */
+section[data-testid="stMain"] > div:first-child { padding-top: 0.5rem !important; }
 
 .page-title { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: #1a1a2e; margin-bottom: 0.2rem; }
 .page-sub   { color: #6b7280; font-size: 0.95rem; margin-bottom: 1.5rem; }
@@ -1785,7 +1939,10 @@ def page_emissions_eol():
             # ── Log summary row to Google Sheets (silent) ────────────
             log_to_sheets(
                 proj=st.session_state.project,
+                waste_table=waste_table,
+                emission_inputs=ei,
                 emission_results=emission_results,
+                circ_scores=circ_scores,
                 circ_aggregate=circ_aggregate,
                 benefits=benefits,
             )
@@ -2103,6 +2260,13 @@ def page_results():
 # ROUTER
 # ══════════════════════════════════════════════════════════════════════════════
 show_progress()
+
+# ── Surface any logging errors (shown once, then cleared) ─────────────────────
+if st.session_state.get("_sheets_error"):
+    st.warning(f"⚠️ Google Sheets logging failed: {st.session_state.pop('_sheets_error')}", icon="📊")
+if st.session_state.get("_fire_error"):
+    st.warning(f"⚠️ Firebase logging failed: {st.session_state.pop('_fire_error')}", icon="🔥")
+
 page = st.session_state.page
 
 if page == 1:   page_project_info()
