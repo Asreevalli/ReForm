@@ -165,40 +165,66 @@ def log_to_sheets(proj, waste_table, emission_inputs, emission_results, circ_sco
                     "Wood/Timber","Bitumen","Plastic","Glass","Others"]
 
         # ── Auto-create header row ────────────────────────────────────────
-        if not sheet.row_values(1):
-            mat_waste_hdrs = [f"{m} Waste (t)" for m in ALL_MATS]
-            mat_sub_hdrs   = [f"{m} SubType"   for m in ALL_MATS]
-            mat_veh_hdrs   = [f"{m} Vehicle"   for m in ALL_MATS]
-            mat_d1_hdrs    = [f"{m} Dist_A4 (km)" for m in ALL_MATS]
-            mat_d2_hdrs    = [f"{m} Dist_C2 (km)" for m in ALL_MATS]
-            mat_rec_hdrs   = [f"{m} Recycle%"  for m in ALL_MATS]
-            mat_reu_hdrs   = [f"{m} Reuse%"    for m in ALL_MATS]
-            mat_lf_hdrs    = [f"{m} Landfill%" for m in ALL_MATS]
-            mat_inc_hdrs   = [f"{m} Incin%"    for m in ALL_MATS]
-            mat_gwp_hdrs   = [f"{m} GWP (kgCO2e)" for m in ALL_MATS]
-            mat_ap_hdrs    = [f"{m} AP (kgSO2e)"  for m in ALL_MATS]
-            mat_ep_hdrs    = [f"{m} EP (kgPO4e)"  for m in ALL_MATS]
-            mat_circ_hdrs  = [f"{m} Circ Score"   for m in ALL_MATS]
-            mat_avoid_hdrs = [f"{m} Avoided (tCO2e)" for m in ALL_MATS]
-            mat_vsav_hdrs  = [f"{m} Virgin Sav (INR)" for m in ALL_MATS]
-            mat_lfdiv_hdrs = [f"{m} LF Diverted (t)"  for m in ALL_MATS]
-            mat_lfsav_hdrs = [f"{m} LF Cost Saved (INR)" for m in ALL_MATS]
+        # ── Always write/refresh header row 1 with clear labels ─────────
+        SHORT = {
+            "Concrete":          "Conc",
+            "Brick/Masonry":     "Brick",
+            "Soil/Sand/Gravel":  "Soil",
+            "Steel/Metal":       "Steel",
+            "Wood/Timber":       "Wood",
+            "Bitumen":           "Bitu",
+            "Plastic":           "Plas",
+            "Glass":             "Glass",
+            "Others":            "Other",
+        }
+        S = [SHORT[m] for m in ALL_MATS]
 
-            headers = (
-                ["Timestamp","Project Name","City","Project Type","Building Type",
-                 "Built-up Area (m2)","Plot Area (m2)","Input Method"] +
-                mat_waste_hdrs + mat_sub_hdrs + mat_veh_hdrs +
-                mat_d1_hdrs + mat_d2_hdrs +
-                mat_rec_hdrs + mat_reu_hdrs + mat_lf_hdrs + mat_inc_hdrs +
-                mat_gwp_hdrs + mat_ap_hdrs + mat_ep_hdrs +
-                mat_circ_hdrs + mat_avoid_hdrs + mat_vsav_hdrs +
-                mat_lfdiv_hdrs + mat_lfsav_hdrs +
-                ["Total Waste (t)","Total GWP (tCO2e)","Total AP (kgSO2e)",
-                 "Total EP (kgPO4e)","Circularity Score (/100)",
-                 "Avoided Emissions (tCO2e)","Virgin Mat Savings (INR)",
-                 "Landfill Diverted (t)","Landfill Cost Saved (INR)"]
-            )
-            sheet.append_row(headers, value_input_option="USER_ENTERED")
+        headers = (
+            # ── PROJECT INFO (cols A–H) ───────────────────────────────────
+            ["Timestamp",
+             "Project Name",
+             "City",
+             "Project Type",
+             "Building Type",
+             "Built-up Area (m²)",
+             "Plot Area (m²)",
+             "Input Method"] +
+            # ── WASTE ESTIMATED per material (t) ─────────────────────────
+            [f"Waste Estimated — {s} (t)"        for s in S] +
+            # ── TRANSPORT INPUTS ─────────────────────────────────────────
+            [f"Material SubType — {s}"            for s in S] +
+            [f"Vehicle Type — {s}"                for s in S] +
+            [f"Transport Dist A4 — {s} (km)"      for s in S] +
+            [f"Transport Dist C2 — {s} (km)"      for s in S] +
+            # ── EOL INPUTS ───────────────────────────────────────────────
+            [f"EOL Recycle% — {s}"                for s in S] +
+            [f"EOL Reuse% — {s}"                  for s in S] +
+            [f"EOL Landfill% — {s}"               for s in S] +
+            [f"EOL Incineration% — {s}"           for s in S] +
+            # ── EMISSIONS per material ────────────────────────────────────
+            [f"GWP Total — {s} (kgCO₂e)"          for s in S] +
+            [f"AP Acidification — {s} (kgSO₂e)"   for s in S] +
+            [f"EP Eutrophication — {s} (kgPO₄e)"  for s in S] +
+            # ── CIRCULARITY per material ──────────────────────────────────
+            [f"Circularity Score — {s} (/100)"    for s in S] +
+            # ── BENEFITS per material ─────────────────────────────────────
+            [f"Avoided Emissions — {s} (tCO₂e)"   for s in S] +
+            [f"Virgin Mat Savings — {s} (INR)"     for s in S] +
+            [f"Landfill Diverted — {s} (t)"        for s in S] +
+            [f"Landfill Cost Saved — {s} (INR)"    for s in S] +
+            # ── SUMMARY TOTALS (last cols) ────────────────────────────────
+            ["TOTAL — Waste Estimated (t)",
+             "TOTAL — GWP Emissions (tCO₂e)",
+             "TOTAL — AP Acidification (kgSO₂e)",
+             "TOTAL — EP Eutrophication (kgPO₄e)",
+             "OVERALL Circularity Score (/100)",
+             "TOTAL — Avoided Emissions (tCO₂e)",
+             "TOTAL — Virgin Mat Savings (INR)",
+             "TOTAL — Landfill Diverted (t)",
+             "TOTAL — Landfill Cost Saved (INR)"]
+        )
+        # Always update row 1 so headers stay correct even on existing sheets
+        sheet.update("A1", [headers])
 
         # ── Helper getters ────────────────────────────────────────────────
         wt_lookup = {r["material"]: round(r["waste_tonnes"], 4) for r in waste_table}
