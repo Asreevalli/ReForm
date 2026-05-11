@@ -1,5 +1,5 @@
 """
-C&D Waste Estimation Tool — CircularBuild
+C&D Waste Estimation Tool — ReForm
 Streamlit multi-page application
 
 DATA SOURCES (all publicly accessible, peer-reviewed or institutional):
@@ -48,7 +48,7 @@ def _build_report_string(proj, waste_table, emission_inputs, emission_results,
     lines.append(f"  Type:          {proj.get('construction_type','')}")
     lines.append(f"  Building Type: {proj.get('building_type','')}")
     lines.append(f"  Built-up Area: {proj.get('builtup_area','')} m²")
-    lines.append(f"  Plot Area:     {proj.get('plot_area','')} m²")
+    lines.append(f"  Floors:        {proj.get('num_floors','—')}")
     lines.append(f"  Input Method:  {proj.get('input_method','')}")
     lines.append("")
 
@@ -187,7 +187,7 @@ def log_to_sheets(proj, waste_table, emission_inputs, emission_results, circ_sco
              "Project Type",
              "Building Type",
              "Built-up Area (m²)",
-             "Plot Area (m²)",
+             "Locality",
              "Input Method"] +
             # ── WASTE ESTIMATED per material (t) ─────────────────────────
             [f"Waste Estimated — {s} (t)"        for s in S] +
@@ -254,7 +254,7 @@ def log_to_sheets(proj, waste_table, emission_inputs, emission_results, circ_sco
             [datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
              proj.get("name",""), proj.get("location",""),
              proj.get("construction_type",""), proj.get("building_type",""),
-             proj.get("builtup_area",""), proj.get("plot_area",""),
+             proj.get("builtup_area",""), proj.get("locality",""),
              proj.get("input_method","")] +
             [wt_lookup.get(m, 0)          for m in ALL_MATS] +
             [ei_v(m,"sub_type","")         for m in ALL_MATS] +
@@ -387,7 +387,7 @@ def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
                 "project_type":      proj.get("construction_type",""),
                 "building_type":     proj.get("building_type",""),
                 "builtup_area_m2":   proj.get("builtup_area",0),
-                "plot_area_m2":      proj.get("plot_area",0),
+                "num_floors":        proj.get("num_floors",0),
                 "input_method":      proj.get("input_method",""),
             },
             # ── Page 3: Waste table ───────────────────────────────────────
@@ -408,7 +408,7 @@ def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="CircularBuild — C&D Waste Tool",
+    page_title="ReForm — C&D Waste Tool",
     page_icon="♻️",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -443,21 +443,14 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 
 # ── Waste Generation Rates ──────────────────────────────────────────────────
 # Source: CSE (2020) "Another Brick off the Wall" p.30 Table 4 — demolition 300-500 kg/m²; construction rates are midpoints within CSE-reported ranges
+# CSE (2020) gives a SINGLE rate range for all building types — no breakdown by Residential/Commercial etc.
+# Using range midpoints: Construction midpoint of 20–70 = 45 kg/m²; Demolition midpoint of 300–500 = 400 kg/m²
+# Building type does NOT affect waste rate here — it is captured for data purposes only and used in LCA benchmarks.
 WASTE_RATES = {
-    "Construction": {
-        "Residential":   {"rate_kg_m2": 40.0,  "range": "20–60"},   # CSE (2020) p.30 range midpoint
-        "Commercial":    {"rate_kg_m2": 50.0,  "range": "30–70"},
-        "Industrial":    {"rate_kg_m2": 45.0,  "range": "25–65"},
-        "Infrastructure":{"rate_kg_m2": 60.0,  "range": "40–80"},
-    },
-    "Demolition": {
-        "Residential":   {"rate_kg_m2": 350.0, "range": "300–500"}, # CSE 2020 p.30
-        "Commercial":    {"rate_kg_m2": 400.0, "range": "300–500"},
-        "Industrial":    {"rate_kg_m2": 420.0, "range": "300–500"},
-        "Infrastructure":{"rate_kg_m2": 380.0, "range": "300–500"},
-    },
+    "Construction": {"rate_kg_m2": 45.0, "range": "20–70"},   # CSE (2020) p.30, midpoint of reported range
+    "Demolition":   {"rate_kg_m2": 400.0, "range": "300–500"}, # CSE (2020) p.30, midpoint of reported range
 }
-WASTE_RATE_SOURCE = "CSE (2020) 'Another Brick off the Wall', p.30 Table 4 — demolition 300–500 kg/m²; construction rates are midpoints within CSE-reported ranges"
+WASTE_RATE_SOURCE = "CSE (2020) \'Another Brick off the Wall\', p.30 — single rate for all building types: Construction 20–70 kg/m² (mid 45), Demolition 300–500 kg/m² (mid 400). No India-specific peer-reviewed source provides a building-type breakdown."
 
 # ── Material Composition % ──────────────────────────────────────────────────
 # Source: CSE (2020) Table 4 (average of 5 studies: TIFAC 2001 via CSE, MCD 2004, IL&FS 2005, Univ. Florida 2009, Coimbatore 2015)
@@ -483,6 +476,30 @@ MATERIAL_COMPOSITION = {
         "Plastic":          1.0,
         "Glass":            0.5,
         "Others":           4.5,
+    },
+    # Institutional (schools, hospitals, govt offices): more concrete/steel, less brick
+    # Proxy — no India-specific peer-reviewed source; adjusted from Commercial norms
+    "Institutional_Construction": {
+        "Concrete":        26.0,
+        "Brick/Masonry":   22.0,
+        "Soil/Sand/Gravel":18.0,
+        "Steel/Metal":      6.0,
+        "Wood/Timber":      4.0,
+        "Bitumen":          1.0,
+        "Plastic":          2.0,
+        "Glass":            2.0,
+        "Others":          19.0,
+    },
+    "Institutional_Demolition": {
+        "Concrete":        28.0,
+        "Brick/Masonry":   27.0,
+        "Soil/Sand/Gravel":26.0,
+        "Steel/Metal":      7.0,
+        "Wood/Timber":      2.0,
+        "Bitumen":          2.0,
+        "Plastic":          1.5,
+        "Glass":            1.5,
+        "Others":           5.0,
     },
 }
 COMP_SOURCE = "CSE (2020) Table 4 — average of 5 studies (TIFAC 2001, MCD 2004, IL&FS 2005, Univ. Florida 2009, Coimbatore 2015); primary accessible source: CSE (2020)"
@@ -938,7 +955,7 @@ def show_progress():
 
 def compute_waste_from_area(project_type, building_type, area_m2):
     """Returns dict: material → waste_tonnes"""
-    rate_kg = WASTE_RATES[project_type][building_type]["rate_kg_m2"]
+    rate_kg = WASTE_RATES[project_type]["rate_kg_m2"]  # CSE single rate, building_type not used
     total_waste_kg = rate_kg * area_m2
     comp = MATERIAL_COMPOSITION[project_type]
     return {mat: (pct/100.0) * total_waste_kg / 1000.0 for mat, pct in comp.items()}
@@ -1179,12 +1196,12 @@ def generate_pdf_report(project, waste_table, emission_results, circ_scores, cir
     def para(text, style='Normal', **kw):
         return Paragraph(text, styles[style])
 
-    elems.append(para("<b>CircularBuild — C&D Waste Estimation Report</b>", 'Title'))
+    elems.append(para("<b>ReForm — C&D Waste Estimation Report</b>", 'Title'))
     elems.append(Spacer(1, 0.4*cm))
     elems.append(para(f"<b>Project:</b> {project.get('name','—')} | <b>Location:</b> {project.get('location','—')} | "
                       f"<b>Type:</b> {project.get('construction_type','—')}"))
     elems.append(para(f"<b>Built-up Area:</b> {project.get('builtup_area','—')} m² | "
-                      f"<b>Plot Area:</b> {project.get('plot_area','—')} m² | "
+                      f"<b>Floors:</b> {project.get('num_floors','—')} | "
                       f"<b>Building Type:</b> {project.get('building_type','—')}"))
     elems.append(Spacer(1, 0.5*cm))
 
@@ -1293,28 +1310,44 @@ def page_project_info():
     with st.form("project_form"):
         c1, c2 = st.columns(2)
         with c1:
-            name = st.text_input("Project Name", placeholder="e.g., Greenfield Residential Complex")
-            location = st.text_input("City / Location", placeholder="e.g., Mumbai")
-            builtup = st.number_input("Built-up Area (m²)", min_value=1.0, value=1000.0, step=50.0)
+            name     = st.text_input("Project Name", placeholder="e.g., Greenfield Residential Complex")
+            city     = st.selectbox("City", [
+                "Ahmedabad","Agra","Amritsar","Aurangabad","Bengaluru","Bhopal","Bhubaneswar",
+                "Chandigarh","Chennai","Coimbatore","Cuttack","Delhi","Durgapur","Faridabad",
+                "Ghaziabad","Greater Noida","Gurugram","Guwahati","Gwalior","Howrah","Hyderabad",
+                "Indore","Jabalpur","Jaipur","Jalandhar","Jodhpur","Kanpur","Kannur","Kakinada",
+                "Kochi","Kolkata","Kozhikode","Kota","Kurnool","Lucknow","Ludhiana","Madurai",
+                "Mangaluru","Meerut","Mumbai","Mysuru","Nagpur","Nashik","Nellore","Noida",
+                "Patna","Pune","Prayagraj","Rajkot","Raipur","Rajamahendravaram","Ranchi",
+                "Salem","Secunderabad","Solapur","Surat","Thane","Thiruvananthapuram","Thrissur",
+                "Tirunelveli","Tirupati","Trichy","Udaipur","Vadodara","Varanasi","Vellore",
+                "Vijayawada","Visakhapatnam","Warangal","Other",
+            ])
+            locality = st.text_input("Locality / Area", placeholder="e.g., Banjara Hills, Whitefield, Andheri West")
+            builtup  = st.number_input("Built-up Area (m²)", min_value=1.0, value=1000.0, step=50.0)
         with c2:
-            ctype = st.selectbox("Project Type", ["Construction", "Demolition", "Redevelopment"])
-            building_type = st.selectbox("Building Type", ["Residential", "Commercial", "Industrial", "Infrastructure"])
-            plot_area = st.number_input("Plot Area (m²)", min_value=1.0, value=1500.0, step=50.0)
+            ctype         = st.selectbox("Project Type", ["Construction", "Demolition", "Redevelopment"])
+            building_type = st.selectbox("Building Type", ["Residential", "Commercial", "Institutional"])
+            st.caption("🏫 Institutional = schools, hospitals, govt offices, universities")
+            num_floors    = st.number_input("Number of Floors", min_value=1, value=4, step=1)
 
-        st.markdown('<div class="source-note">💡 Building type affects waste generation rate. Source: CSE (2020) "Another Brick off the Wall" Table 4 & p.30. Industrial/Infrastructure types use Commercial as proxy for environmental benchmarks (no India-specific peer-reviewed LCA data).</div>', unsafe_allow_html=True)
+        st.markdown('<div class="source-note">💡 Building type is collected for data purposes and affects LCA emission benchmarks (page 4). It does <b>not</b> affect the waste generation rate — CSE (2020) "Another Brick off the Wall" p.30 provides a single rate for all building types (Construction: 20–70 kg/m², Demolition: 300–500 kg/m²) with no building-type breakdown.</div>', unsafe_allow_html=True)
         submitted = st.form_submit_button("Next →", type="primary", use_container_width=True)
         if submitted:
-            if not name or not location:
-                st.error("Please fill in Project Name and Location.")
+            location_full = f"{locality.strip()}, {city}" if locality.strip() else city
+            if not name:
+                st.error("Please fill in the Project Name.")
             else:
                 st.session_state.project = {
-                    "name": name, "location": location,
-                    "construction_type": ctype, "building_type": building_type,
-                    "builtup_area": builtup, "plot_area": plot_area,
+                    "name":              name,
+                    "location":          location_full,
+                    "city":              city,
+                    "locality":          locality.strip(),
+                    "construction_type": ctype,
+                    "building_type":     building_type,
+                    "builtup_area":      builtup,
+                    "num_floors":        int(num_floors),
                 }
-                # Handle Redevelopment = Demolition + Construction
-                if ctype == "Redevelopment":
-                    st.session_state.project["construction_type"] = "Redevelopment"
                 go(2)
                 st.rerun()
 
@@ -1395,7 +1428,7 @@ def page_waste_estimation():
     # AREA-BASED
     # ────────────────────────────────────────────────────────────────────────
     if method == "area":
-        rate_info      = WASTE_RATES[ptype][btype]
+        rate_info = WASTE_RATES[ptype]  # single CSE rate, not split by building type
         area_m2        = proj["builtup_area"]
         total_waste_kg = rate_info["rate_kg_m2"] * area_m2
 
@@ -1436,15 +1469,27 @@ def page_waste_estimation():
         st.markdown("#### Step 2 — Adjust waste split (%) among selected materials")
         st.caption("Pre-filled from CSE (2020) composition benchmarks, re-normalised to 100% for your selection. Edit freely.")
 
-        full_comp = MATERIAL_COMPOSITION[ptype]
+        _comp_key = (f"Institutional_{ptype}"
+                    if btype == "Institutional" and f"Institutional_{ptype}" in MATERIAL_COMPOSITION
+                    else ptype)
+        full_comp = MATERIAL_COMPOSITION[_comp_key]
         raw = {m: full_comp.get(m, 1.0) for m in selected}
         raw_sum = sum(raw.values())
+        # Round each to 1dp, then force-correct last material so sum == exactly 100.0
         auto_pct = {m: round(v / raw_sum * 100, 1) for m, v in raw.items()}
+        _last = selected[-1]
+        auto_pct[_last] = round(100.0 - sum(auto_pct[m] for m in selected[:-1]), 1)
+        auto_pct[_last] = max(0.0, auto_pct[_last])  # never go negative
 
         # Reset stored % only when material selection changes
         if st.session_state.get("ab_last_sel") != selected:
             st.session_state["ab_pct"] = dict(auto_pct)
             st.session_state["ab_last_sel"] = selected[:]
+
+        # If "Others" is selected, use it as the auto-balancing residual (like Landfill in EOL)
+        # Otherwise use the last selected material as residual
+        _residual_mat = "Others" if "Others" in selected else selected[-1]
+        _editable = [m for m in selected if m != _residual_mat]
 
         hdr = st.columns([3, 2, 3])
         hdr[0].markdown("**Material**")
@@ -1452,7 +1497,7 @@ def page_waste_estimation():
         hdr[2].markdown("**Estimated Waste (t)**")
 
         live = {}
-        for mat in selected:
+        for mat in _editable:
             row = st.columns([3, 2, 3])
             row[0].write(mat)
             pct = row[1].number_input(
@@ -1463,13 +1508,25 @@ def page_waste_estimation():
             wt = pct / 100.0 * total_waste_kg / 1000.0
             row[2].write(f"**{wt:.3f} t**")
 
+        # Residual row — auto-calculated, read-only
+        _used = sum(live.values())
+        _residual_pct = round(max(0.0, 100.0 - _used), 1)
+        live[_residual_mat] = _residual_pct
+        res_row = st.columns([3, 2, 3])
+        res_row[0].markdown(f"**{_residual_mat}** *(auto)*")
+        res_row[1].markdown(f"**{_residual_pct:.1f}%**")
+        res_row[2].markdown(f"**{_residual_pct/100*total_waste_kg/1000:.3f} t**")
+
         pct_sum = sum(live.values())
-        if abs(pct_sum - 100.0) > 0.5:
-            st.warning(f"⚠️ Percentages sum to {pct_sum:.1f}% — must reach 100% before proceeding.")
+        if _used > 100.0:
+            overflow = round(_used - 100.0, 1)
+            st.error(f"⚠️ Materials above add up to {_used:.1f}% (over by {overflow}%). "
+                     f"Reduce one — {_residual_mat} is floored at 0%.")
             ok_to_proceed = False
         else:
             total_est = pct_sum / 100.0 * total_waste_kg / 1000.0
-            st.success(f"✅ Total estimated waste: **{total_est:.2f} tonnes**")
+            st.success(f"✅ Sums to 100% — Total estimated waste: **{total_est:.2f} tonnes** "
+                       f"({_residual_mat} = {_residual_pct:.1f}% auto-filled)")
             ok_to_proceed = True
 
         st.caption(f"Composition basis: {COMP_SOURCE}")
@@ -1564,7 +1621,7 @@ def page_waste_estimation():
     elif method == "bim":
         st.markdown("""
         <div class="info-box">
-        <b>CircularBuild Dynamo Extractor — Step-by-Step Instructions</b><br><br>
+        <b>ReForm Dynamo Extractor — Step-by-Step Instructions</b><br><br>
         <b>What you need:</b> Autodesk Revit (2021 or later) with Dynamo 2.x installed.<br><br>
         <b>Step 1 — Download the script</b><br>
         Click the <b>Download Dynamo Script</b> button below to get <code>Extract_Materials.dyn</code>. Save it anywhere on your computer.<br><br>
@@ -1621,12 +1678,12 @@ def page_waste_estimation():
         """, unsafe_allow_html=True)
 
         uploaded = st.file_uploader(
-            "Upload CircularBuild Material Export (.xlsx or .csv)",
+            "Upload ReForm Material Export (.xlsx or .csv)",
             type=["csv", "xlsx"],
             help="Upload the Excel file generated by Extract_Materials.dyn from your Revit model"
         )
 
-        # ── CircularBuild material groups ──────────────────────────────────
+        # ── ReForm material groups ──────────────────────────────────
         CB_GROUPS = ["Concrete", "Brick/Masonry", "Soil/Sand/Gravel", "Steel/Metal",
                      "Wood/Timber", "Bitumen", "Plastic", "Glass", "Others"]
 
@@ -1658,7 +1715,7 @@ def page_waste_estimation():
         }
 
         def resolve_group(mat_name, cat_name=""):
-            """Map Revit material/category name to CircularBuild group."""
+            """Map Revit material/category name to ReForm group."""
             text = (mat_name + " " + cat_name).lower()
             for grp, kws in REVIT_KEYWORDS.items():
                 if any(k in text for k in kws):
@@ -1779,15 +1836,15 @@ def page_waste_estimation():
                         st.button("← Back", on_click=lambda: go(2), key="bim_back_empty")
                     else:
                         # ── Show mapping table ─────────────────────────────
-                        st.markdown("#### Material Mapping — Revit → CircularBuild Groups")
-                        st.caption("Each Revit material has been classified into a CircularBuild group using keyword matching. Review and adjust waste % below.")
+                        st.markdown("#### Material Mapping — Revit → ReForm Groups")
+                        st.caption("Each Revit material has been classified into a ReForm group using keyword matching. Review and adjust waste % below.")
 
                         map_rows = []
                         for g in CB_GROUPS:
                             if g not in agg: continue
                             d = agg[g]
                             map_rows.append({
-                                "CircularBuild Group":  g,
+                                "ReForm Group":  g,
                                 "Total Mass (tonnes)":  round(d["mass_kg"]/1000, 3),
                                 "Total Volume (m³)":    round(d["vol_m3"], 3),
                                 "No. of Revit rows":    d["count"],
@@ -1923,15 +1980,22 @@ def page_emissions_eol():
             default_eol = DEFAULT_EOL.get(mat, {"Reuse": 0, "Recycle": 50, "Landfill": 40, "Incineration": 5, "Other": 5})
             cur_eol = ei.get(mat, {}).get("eol", default_eol)
             with c3:
-                st.markdown("**End-of-Life (%) — must sum to 100**")
-                reuse    = st.slider("Reuse %",        0, 100, int(cur_eol.get("Reuse",0)),    key=f"eol_reuse_{mat}")
-                recycle  = st.slider("Recycle %",      0, 100, int(cur_eol.get("Recycle",50)), key=f"eol_recycle_{mat}")
-                landfill = st.slider("Landfill %",     0, 100, int(cur_eol.get("Landfill",40)),key=f"eol_landfill_{mat}")
-                incin    = st.slider("Incineration %", 0, 100, int(cur_eol.get("Incineration",5)),key=f"eol_incin_{mat}")
-                other    = st.slider("Other %",        0, 100, int(cur_eol.get("Other",5)),    key=f"eol_other_{mat}")
-                total_eol = reuse + recycle + landfill + incin + other
-                if total_eol != 100:
-                    st.warning(f"EOL total = {total_eol}% (must be 100%)")
+                st.markdown("**End-of-Life routing** — set Reuse, Recycle, Incineration & Other; **remaining % goes automatically to Landfill**")
+                reuse   = st.slider("Reuse %",        0, 100,
+                                    int(cur_eol.get("Reuse",    0)), key=f"eol_reuse_{mat}")
+                recycle = st.slider("Recycle %",      0, 100,
+                                    int(cur_eol.get("Recycle", 50)), key=f"eol_recycle_{mat}")
+                incin   = st.slider("Incineration %", 0, 100,
+                                    int(cur_eol.get("Incineration", 5)), key=f"eol_incin_{mat}")
+                other   = st.slider("Other %",        0, 100,
+                                    int(cur_eol.get("Other",    5)), key=f"eol_other_{mat}")
+                landfill = max(0, 100 - reuse - recycle - incin - other)
+                overflow = (reuse + recycle + incin + other) - 100
+                if overflow > 0:
+                    st.error(f"⚠️ Reuse + Recycle + Incineration + Other = {reuse+recycle+incin+other}% "
+                             f"(exceeds 100 by {overflow}%). Reduce one slider — Landfill is set to 0%.")
+                else:
+                    st.metric("↳ Landfill (remainder, auto-calculated)", f"{landfill}%")
 
             ei[mat] = {
                 "sub_type": sub, "vehicle": veh,
