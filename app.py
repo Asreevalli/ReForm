@@ -1381,7 +1381,7 @@ def page_data_input():
             st.markdown("**Indicative** — for early-stage estimates")
             ab = st.button("Use Area-Based Estimate", key="ab", use_container_width=True)
 
-    st.markdown(f'<div class="source-note">📚 Area-based rates from: {WASTE_RATE_SOURCE}. Note: Industrial and Infrastructure use Commercial as proxy for per-m² environmental benchmarks.</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="source-note">📚 Area-based rates: {WASTE_RATE_SOURCE}</div>', unsafe_allow_html=True)
 
     if bim: st.session_state.input_method = "bim"; go(3); st.rerun()
     if mq:  st.session_state.input_method = "material"; go(3); st.rerun()
