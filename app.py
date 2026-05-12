@@ -30,6 +30,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import firebase_admin
 from firebase_admin import credentials as fb_credentials, firestore
+import matplotlib
 
 # ─── GOOGLE SHEETS LOGGER ───────────────────────────────────────────────────
 # ─── SHARED: build formatted report string ──────────────────────────────────
