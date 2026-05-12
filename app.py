@@ -1025,9 +1025,10 @@ def find_nearest_plants(user_location_str, n=5):
     return [{**p, "Distance_km": None} for p in RECYCLING_PLANTS[:n]]
 
 
-def _pdf_pie(vals, labels, colors_list, title, size=(3.2, 3.2)):
+def _pdf_pie(vals, labels, colors_list, title, size=(3.2, 3.8)):
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt, io
+    from PIL import Image as PILImage
     from reportlab.platypus import Image as RLImg
     fig, ax = plt.subplots(figsize=size)
     _, _, autotexts = ax.pie(vals, labels=None, colors=colors_list,
@@ -1035,16 +1036,20 @@ def _pdf_pie(vals, labels, colors_list, title, size=(3.2, 3.2)):
         wedgeprops=dict(linewidth=0.4, edgecolor="white"))
     for at in autotexts: at.set_fontsize(6.5)
     ax.set_title(title, fontsize=8.5, fontweight="bold", pad=6)
-    ax.legend(labels, loc="lower center", bbox_to_anchor=(0.5,-0.3),
+    ax.legend(labels, loc="lower center", bbox_to_anchor=(0.5,-0.18),
               ncol=2, fontsize=5.5, frameon=False)
-    plt.tight_layout()
+    fig.subplots_adjust(bottom=0.18)
     buf2 = io.BytesIO(); fig.savefig(buf2, format="png", dpi=150, bbox_inches="tight"); plt.close(fig)
     buf2.seek(0)
-    return RLImg(buf2, width=size[0]*72, height=size[1]*72)
+    img = PILImage.open(buf2); w_px, h_px = img.size; buf2.seek(0)
+    aspect = h_px / w_px
+    rl_w = size[0] * 72
+    return RLImg(buf2, width=rl_w, height=rl_w * aspect)
 
-def _pdf_bar(mats_list, er_dict, size=(6.2, 2.6)):
+def _pdf_bar(mats_list, er_dict, size=(6.2, 3.0)):
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt, io
+    from PIL import Image as PILImage
     from reportlab.platypus import Image as RLImg
     stages  = ["A1A3","A4","A5","C1","C2","C3","C4"]
     slabels = ["A1-A3","A4","A5","C1","C2","C3","C4"]
@@ -1058,10 +1063,13 @@ def _pdf_bar(mats_list, er_dict, size=(6.2, 2.6)):
     ax.set_ylabel("kg CO\u2082e", fontsize=8)
     ax.set_title("Emission Stages by Material", fontsize=9, fontweight="bold")
     ax.legend(loc="upper right", fontsize=7, frameon=False, ncol=4)
-    plt.xticks(rotation=20, ha="right", fontsize=7); plt.tight_layout()
+    plt.xticks(rotation=20, ha="right", fontsize=7)
+    fig.subplots_adjust(bottom=0.22)
     buf2 = io.BytesIO(); fig.savefig(buf2, format="png", dpi=150, bbox_inches="tight"); plt.close(fig)
     buf2.seek(0)
-    return RLImg(buf2, width=size[0]*72, height=size[1]*72)
+    img = PILImage.open(buf2); w_px, h_px = img.size; buf2.seek(0)
+    rl_w = size[0] * 72
+    return RLImg(buf2, width=rl_w, height=rl_w * (h_px / w_px))
 
 def generate_pdf_report(project, waste_table, emission_results, circ_scores, circ_aggregate, benefits):
     from reportlab.lib.pagesizes import A4
@@ -1199,7 +1207,7 @@ def generate_pdf_report(project, waste_table, emission_results, circ_scores, cir
         _pdf_pie(wst_v, wst_l, [PCOLS[i%len(PCOLS)] for i in range(len(wst_l))], "Waste"),
         _pdf_pie(gwp_v, mats_er, pclr_er, "GWP"),
         _pdf_pie(crc_v, mats_er, pclr_er, "Circularity"),
-    ]], colWidths=[5.3*cm,5.3*cm,5.3*cm])
+    ]], colWidths=[5.6*cm,5.6*cm,5.6*cm])
     pie_row.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"),("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
     E.append(pie_row); E.append(Spacer(1,0.3*cm))
     E.append(_pdf_bar(mats_er, emission_results)); E.append(Spacer(1,0.5*cm))
