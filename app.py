@@ -1,5 +1,5 @@
 """
-C&D Waste Estimation Tool — CircularBuild
+C&D Waste Estimation Tool — ReForm
 Streamlit multi-page application
 
 DATA SOURCES (all publicly accessible, peer-reviewed or institutional):
@@ -30,6 +30,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import firebase_admin
 from firebase_admin import credentials as fb_credentials, firestore
+import matplotlib
 
 # ─── GOOGLE SHEETS LOGGER ───────────────────────────────────────────────────
 # ─── SHARED: build formatted report string ──────────────────────────────────
@@ -150,73 +151,28 @@ def _build_report_string(proj, waste_table, emission_inputs, emission_results,
 
 
 
-# ─── GOOGLE SHEETS LOGGER — full inputs + summary row ────────────────────────
-def log_to_sheets(proj, waste_table, emission_inputs, emission_results, circ_scores, circ_aggregate, benefits):
-    """Write one row per submission: project info, all material inputs, all results."""
+# ─── GOOGLE SHEETS LOGGER — summary row ──────────────────────────────────────
+def log_to_sheets(proj, emission_results, circ_aggregate, benefits):
+    """Write one summary row per submission. Headers auto-created if sheet is empty."""
     try:
         scopes  = ["https://www.googleapis.com/auth/spreadsheets",
                    "https://www.googleapis.com/auth/drive"]
         sa_info = {k: v for k, v in st.secrets["gcp_service_account"].items()}
         creds   = Credentials.from_service_account_info(sa_info, scopes=scopes)
-        # gspread.authorize() removed in v6 — use Client directly
         client  = gspread.Client(auth=creds)
         client.session = gspread.auth.AuthorizedSession(creds)
         sheet   = client.open(st.secrets["sheets"]["spreadsheet_name"]).sheet1
 
-        ALL_MATS = ["Concrete","Brick/Masonry","Soil/Sand/Gravel","Steel/Metal",
-                    "Wood/Timber","Bitumen","Plastic","Glass","Others"]
-
-        # ── Auto-create header row ────────────────────────────────────────
+        # Auto-create header row if sheet is empty
         if not sheet.row_values(1):
-            mat_waste_hdrs = [f"{m} Waste (t)" for m in ALL_MATS]
-            mat_sub_hdrs   = [f"{m} SubType"   for m in ALL_MATS]
-            mat_veh_hdrs   = [f"{m} Vehicle"   for m in ALL_MATS]
-            mat_d1_hdrs    = [f"{m} Dist_A4 (km)" for m in ALL_MATS]
-            mat_d2_hdrs    = [f"{m} Dist_C2 (km)" for m in ALL_MATS]
-            mat_rec_hdrs   = [f"{m} Recycle%"  for m in ALL_MATS]
-            mat_reu_hdrs   = [f"{m} Reuse%"    for m in ALL_MATS]
-            mat_lf_hdrs    = [f"{m} Landfill%" for m in ALL_MATS]
-            mat_inc_hdrs   = [f"{m} Incin%"    for m in ALL_MATS]
-            mat_gwp_hdrs   = [f"{m} GWP (kgCO2e)" for m in ALL_MATS]
-            mat_ap_hdrs    = [f"{m} AP (kgSO2e)"  for m in ALL_MATS]
-            mat_ep_hdrs    = [f"{m} EP (kgPO4e)"  for m in ALL_MATS]
-            mat_circ_hdrs  = [f"{m} Circ Score"   for m in ALL_MATS]
-            mat_avoid_hdrs = [f"{m} Avoided (tCO2e)" for m in ALL_MATS]
-            mat_vsav_hdrs  = [f"{m} Virgin Sav (INR)" for m in ALL_MATS]
-            mat_lfdiv_hdrs = [f"{m} LF Diverted (t)"  for m in ALL_MATS]
-            mat_lfsav_hdrs = [f"{m} LF Cost Saved (INR)" for m in ALL_MATS]
+            sheet.append_row([
+                "Timestamp","Project Name","City","Project Type","Building Type",
+                "Built-up Area (m2)","Plot Area (m2)","Input Method",
+                "Total Waste (t)","Total GWP (tCO2e)","Total AP (kg SO2e)",
+                "Total EP (kg PO4e)","Circularity Score","Avoided Emissions (tCO2e)",
+                "Virgin Mat Savings (INR)","Landfill Diverted (t)","Landfill Cost Saved (INR)",
+            ])
 
-            headers = (
-                ["Timestamp","Project Name","City","Project Type","Building Type",
-                 "Built-up Area (m2)","Plot Area (m2)","Input Method"] +
-                mat_waste_hdrs + mat_sub_hdrs + mat_veh_hdrs +
-                mat_d1_hdrs + mat_d2_hdrs +
-                mat_rec_hdrs + mat_reu_hdrs + mat_lf_hdrs + mat_inc_hdrs +
-                mat_gwp_hdrs + mat_ap_hdrs + mat_ep_hdrs +
-                mat_circ_hdrs + mat_avoid_hdrs + mat_vsav_hdrs +
-                mat_lfdiv_hdrs + mat_lfsav_hdrs +
-                ["Total Waste (t)","Total GWP (tCO2e)","Total AP (kgSO2e)",
-                 "Total EP (kgPO4e)","Circularity Score (/100)",
-                 "Avoided Emissions (tCO2e)","Virgin Mat Savings (INR)",
-                 "Landfill Diverted (t)","Landfill Cost Saved (INR)"]
-            )
-            sheet.append_row(headers, value_input_option="USER_ENTERED")
-
-        # ── Helper getters ────────────────────────────────────────────────
-        wt_lookup = {r["material"]: round(r["waste_tonnes"], 4) for r in waste_table}
-
-        def ei_v(mat, field, default=0):
-            return emission_inputs.get(mat, {}).get(field, default)
-        def eol_v(mat, field):
-            return emission_inputs.get(mat, {}).get("eol", {}).get(field, 0)
-        def er_v(mat, field):
-            v = emission_results.get(mat, {}).get(field, 0)
-            return round(v, 4) if v else 0
-        def ben_v(mat, field):
-            v = benefits.get(mat, {}).get(field, 0)
-            return round(v, 4) if v else 0
-
-        # ── Compute totals ────────────────────────────────────────────────
         total_waste   = round(sum(r["qty_t"]     for r in emission_results.values()), 3)
         total_gwp     = round(sum(r["total_gwp"] for r in emission_results.values()) / 1000.0, 4)
         total_ap      = round(sum(r["AP"]        for r in emission_results.values()), 4)
@@ -226,48 +182,21 @@ def log_to_sheets(proj, waste_table, emission_inputs, emission_results, circ_sco
         total_lfdiv   = round(sum(b.get("landfill_diverted_t",0)         for b in benefits.values()), 3)
         total_lfsav   = round(sum(b.get("landfill_cost_saved_inr",0)     for b in benefits.values()), 0)
 
-        row = (
-            [datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-             proj.get("name",""), proj.get("location",""),
-             proj.get("construction_type",""), proj.get("building_type",""),
-             proj.get("builtup_area",""), proj.get("plot_area",""),
-             proj.get("input_method","")] +
-            [wt_lookup.get(m, 0)          for m in ALL_MATS] +
-            [ei_v(m,"sub_type","")         for m in ALL_MATS] +
-            [ei_v(m,"vehicle","")          for m in ALL_MATS] +
-            [ei_v(m,"distance_km",0)       for m in ALL_MATS] +
-            [ei_v(m,"distance_km_c2",0)    for m in ALL_MATS] +
-            [eol_v(m,"Recycle")            for m in ALL_MATS] +
-            [eol_v(m,"Reuse")              for m in ALL_MATS] +
-            [eol_v(m,"Landfill")           for m in ALL_MATS] +
-            [eol_v(m,"Incineration")       for m in ALL_MATS] +
-            [er_v(m,"total_gwp")           for m in ALL_MATS] +
-            [er_v(m,"AP")                  for m in ALL_MATS] +
-            [er_v(m,"EP")                  for m in ALL_MATS] +
-            [round(circ_scores.get(m,0)*100,1) for m in ALL_MATS] +
-            [round(ben_v(m,"avoided_emission_kgco2e")/1000,4) for m in ALL_MATS] +
-            [ben_v(m,"virgin_material_savings_inr") for m in ALL_MATS] +
-            [ben_v(m,"landfill_diverted_t")         for m in ALL_MATS] +
-            [ben_v(m,"landfill_cost_saved_inr")     for m in ALL_MATS] +
-            [total_waste, total_gwp, total_ap, total_ep,
-             round(circ_aggregate*100,1),
-             total_avoided, total_vsav, total_lfdiv, total_lfsav]
-        )
-        sheet.append_row(row, value_input_option="USER_ENTERED")
-        st.session_state["_sheets_ok"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.pop("_sheets_error", None)
-        return True
-    except Exception as e:
-        import traceback
-        st.session_state["_sheets_error"] = (
-            f"{type(e).__name__}: {e}\n"
-            f"{traceback.format_exc()[-800:]}"
-        )
-        st.session_state.pop("_sheets_ok", None)
-        return False
+        sheet.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            proj.get("name",""),       proj.get("location",""),
+            proj.get("construction_type",""), proj.get("building_type",""),
+            proj.get("builtup_area",""),      proj.get("plot_area",""),
+            proj.get("input_method",""),
+            total_waste, total_gwp, total_ap, total_ep,
+            round(circ_aggregate*100,1),
+            total_avoided, total_vsav, total_lfdiv, total_lfsav,
+        ], value_input_option="USER_ENTERED")
+    except Exception:
+        pass  # silent — never interrupt the user
 
 
-# ─── FIRESTORE LOGGER — full structured data ─────────────────────────────────
+# ─── FIRESTORE LOGGER — full formatted report ────────────────────────────────
 def _get_firestore_client():
     """Initialise Firebase app once per session and return Firestore client."""
     import firebase_admin
@@ -278,154 +207,32 @@ def _get_firestore_client():
     return _fb_fs.client()
 
 
-def _fk(name):
-    """
-    Sanitise a material name into a valid Firestore field key.
-    Firestore forbids '/' in field names; also strip dots and leading underscores.
-    e.g.  'Brick/Masonry' → 'Brick_Masonry'
-          'Soil/Sand/Gravel' → 'Soil_Sand_Gravel'
-    """
-    return name.replace("/", "_").replace(".", "_").strip("_")
-
-
 def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
                      circ_scores, circ_aggregate, benefits):
-    """
-    Store every input and output in Firestore collection 'submissions'.
-
-    Document structure
-    ──────────────────
-    timestamp          string
-    project_name       string
-    city               string
-    project_info       map   ← page 1 inputs
-    waste_inputs       map   ← page 3: {Material: tonnes, …}
-    emission_inputs    map   ← page 4: {Material: {vehicle, distances, EOL%…}}
-    emission_results   map   ← computed: {Material: {A1A3…C4, total_GWP, AP, EP, circ_score}}
-    benefits           map   ← computed: {Material: {recycled_t, avoided…, savings…}}
-    summary            map   ← totals across all materials
-    report             string ← human-readable text dump
-    """
-    import traceback
+    """Store full formatted report in Firestore collection 'submissions'."""
     try:
-        db  = _get_firestore_client()
-        ts  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        safe_name = proj.get("name", "unknown").replace(" ", "_")[:30]
-        doc_id    = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_name
+        db = _get_firestore_client()
 
-        # ── 1. Project info ───────────────────────────────────────────────
-        project_info = {
-            "name":            proj.get("name", ""),
-            "city":            proj.get("location", ""),
-            "project_type":    proj.get("construction_type", ""),
-            "building_type":   proj.get("building_type", ""),
-            "builtup_area_m2": float(proj.get("builtup_area", 0) or 0),
-            "plot_area_m2":    float(proj.get("plot_area", 0) or 0),
-            "input_method":    proj.get("input_method", ""),
-            "num_floors":      int(proj.get("num_floors", 0) or 0),
-        }
-
-        # ── 2. Waste table — {SafeKey: tonnes} ───────────────────────────
-        waste_data = {}
-        for row in waste_table:
-            waste_data[_fk(row["material"])] = round(float(row["waste_tonnes"]), 4)
-
-        # ── 3. Emission inputs (transport + EOL) — one sub-map per material
-        inputs_data = {}
-        for mat, ei in emission_inputs.items():
-            eol = ei.get("eol", {})
-            inputs_data[_fk(mat)] = {
-                "sub_type":          ei.get("sub_type", ""),
-                "vehicle":           ei.get("vehicle", ""),
-                "distance_A4_km":    float(ei.get("distance_km", 0) or 0),
-                "distance_C2_km":    float(ei.get("distance_km_c2", 0) or 0),
-                "eol_reuse_pct":     int(eol.get("Reuse", 0)),
-                "eol_recycle_pct":   int(eol.get("Recycle", 0)),
-                "eol_landfill_pct":  int(eol.get("Landfill", 0)),
-                "eol_incin_pct":     int(eol.get("Incineration", 0)),
-                "eol_other_pct":     int(eol.get("Other", 0)),
-            }
-
-        # ── 4. Emission results — one sub-map per material ────────────────
-        emission_data = {}
-        for mat, r in emission_results.items():
-            emission_data[_fk(mat)] = {
-                "waste_t":          round(float(r.get("qty_t", 0)), 4),
-                "A1A3_kgCO2e":      round(float(r.get("A1A3", 0)), 2),
-                "A4_kgCO2e":        round(float(r.get("A4",   0)), 2),
-                "A5_kgCO2e":        round(float(r.get("A5",   0)), 2),
-                "C1_kgCO2e":        round(float(r.get("C1",   0)), 2),
-                "C2_kgCO2e":        round(float(r.get("C2",   0)), 2),
-                "C3_kgCO2e":        round(float(r.get("C3",   0)), 2),
-                "C4_kgCO2e":        round(float(r.get("C4",   0)), 2),
-                "total_GWP_kgCO2e": round(float(r.get("total_gwp", 0)), 2),
-                "AP_kgSO2e":        round(float(r.get("AP", 0)), 4),
-                "EP_kgPO4e":        round(float(r.get("EP", 0)), 6),
-                "circ_score_100":   round(float(circ_scores.get(mat, 0)) * 100, 1),
-            }
-
-        # ── 5. Benefits — one sub-map per material ────────────────────────
-        benefits_data = {}
-        for mat, b in benefits.items():
-            benefits_data[_fk(mat)] = {
-                "recycled_t":               round(float(b.get("recycled_t", 0)), 4),
-                "reused_t":                 round(float(b.get("reused_t", 0)), 4),
-                "landfill_t":               round(float(b.get("landfill_t", 0)), 4),
-                "landfill_diverted_t":      round(float(b.get("landfill_diverted_t", 0)), 4),
-                "avoided_emission_tCO2e":   round(float(b.get("avoided_emission_kgco2e", 0)) / 1000, 4),
-                "virgin_savings_INR":       round(float(b.get("virgin_material_savings_inr", 0)), 0),
-                "landfill_cost_saved_INR":  round(float(b.get("landfill_cost_saved_inr", 0)), 0),
-                "landfill_cost_per_t_INR":  float(b.get("landfill_cost_per_tonne", 0)),
-            }
-
-        # ── 6. Summary totals ─────────────────────────────────────────────
-        summary = {
-            "total_waste_t":            round(sum(float(r["qty_t"])     for r in emission_results.values()), 3),
-            "total_GWP_tCO2e":          round(sum(float(r["total_gwp"]) for r in emission_results.values()) / 1000, 4),
-            "total_AP_kgSO2e":          round(sum(float(r["AP"])        for r in emission_results.values()), 4),
-            "total_EP_kgPO4e":          round(sum(float(r["EP"])        for r in emission_results.values()), 6),
-            "circularity_score_100":    round(float(circ_aggregate) * 100, 1),
-            "avoided_emissions_tCO2e":  round(sum(float(b.get("avoided_emission_kgco2e", 0)) for b in benefits.values()) / 1000, 4),
-            "virgin_savings_INR":       round(sum(float(b.get("virgin_material_savings_inr", 0)) for b in benefits.values()), 0),
-            "landfill_diverted_t":      round(sum(float(b.get("landfill_diverted_t", 0)) for b in benefits.values()), 3),
-            "landfill_cost_saved_INR":  round(sum(float(b.get("landfill_cost_saved_inr", 0)) for b in benefits.values()), 0),
-        }
-
-        # ── 7. Human-readable text report ────────────────────────────────
         report_str = _build_report_string(
             proj, waste_table, emission_inputs, emission_results,
             circ_scores, circ_aggregate, benefits
         )
 
-        # ── 8. Write to Firestore ─────────────────────────────────────────
+        safe_name = proj.get("name","unknown").replace(" ","_")[:30]
+        doc_id    = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_name
+
         db.collection("submissions").document(doc_id).set({
-            "timestamp":        ts,
-            "project_name":     proj.get("name", ""),
-            "city":             proj.get("location", ""),
-            "project_info":     project_info,
-            "waste_inputs":     waste_data,
-            "emission_inputs":  inputs_data,
-            "emission_results": emission_data,
-            "benefits":         benefits_data,
-            "summary":          summary,
-            "report":           report_str,
+            "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "project_name": proj.get("name",""),
+            "city":         proj.get("location",""),
+            "report":       report_str,
         })
-
-        # ── Success flag (shown in debug panel) ───────────────────────────
-        st.session_state["_fire_ok"]    = ts
-        st.session_state["_fire_doc"]   = doc_id
-        st.session_state.pop("_fire_error", None)
-
-    except Exception as e:
-        st.session_state["_fire_error"] = (
-            f"{type(e).__name__}: {e}\n"
-            f"{traceback.format_exc()[-800:]}"
-        )
-        st.session_state.pop("_fire_ok", None)
+    except Exception:
+        pass  # silent — never interrupt the user
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="CircularBuild — C&D Waste Tool",
+    page_title="ReForm — C&D Waste Tool",
     page_icon="♻️",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -438,7 +245,7 @@ st.markdown("""
 
 html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 
-.block-container { padding-top: 4rem !important; padding-bottom: 2rem; max-width: 1100px; }
+.block-container { padding-top: 2rem; padding-bottom: 2rem; max-width: 1100px; }
 
 .page-title { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: #1a1a2e; margin-bottom: 0.2rem; }
 .page-sub   { color: #6b7280; font-size: 0.95rem; margin-bottom: 1.5rem; }
@@ -936,15 +743,44 @@ def go(page): st.session_state.page = page
 # ══════════════════════════════════════════════════════════════════════════════
 STEPS = ["Project Info", "Data Input", "Waste Estimation", "Emissions & EOL", "Results & Report"]
 
+REFORM_LOGO = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 56">
+  <rect x="2" y="28" width="72" height="20" rx="3" fill="#1a1a2e"/>
+  <rect x="4" y="20" width="32" height="12" rx="2" fill="#1a1a2e"/>
+  <rect x="6" y="22" width="14" height="8" rx="1" fill="#93c5fd"/>
+  <g transform="rotate(-20,55,28)">
+    <rect x="36" y="14" width="34" height="15" rx="2" fill="#ef4444"/>
+  </g>
+  <circle cx="78" cy="26" r="3" fill="#92400e" opacity=".9"/>
+  <circle cx="85" cy="20" r="2.5" fill="#78716c" opacity=".85"/>
+  <rect x="82" y="29" width="5" height="5" rx="1" fill="#92400e" opacity=".75"/>
+  <circle cx="91" cy="33" r="2" fill="#6b7280" opacity=".8"/>
+  <text x="97" y="27" font-size="13" fill="#10b981" font-family="sans-serif" font-weight="bold">→</text>
+  <rect x="112" y="18" width="18" height="22" rx="1" fill="#10b981" opacity=".9"/>
+  <rect x="115" y="22" width="5" height="6" rx=".5" fill="white" opacity=".7"/>
+  <rect x="122" y="22" width="5" height="6" rx=".5" fill="white" opacity=".7"/>
+  <rect x="115" y="30" width="12" height="10" rx=".5" fill="#065f46"/>
+  <line x1="112" y1="18" x2="112" y2="12" stroke="#fbbf24" stroke-width="1.2"/>
+  <line x1="130" y1="18" x2="130" y2="12" stroke="#fbbf24" stroke-width="1.2"/>
+  <line x1="110" y1="12" x2="132" y2="12" stroke="#fbbf24" stroke-width="1.2"/>
+  <circle cx="20" cy="49" r="7" fill="#374151"/>
+  <circle cx="20" cy="49" r="3.5" fill="#6b7280"/>
+  <circle cx="58" cy="49" r="7" fill="#374151"/>
+  <circle cx="58" cy="49" r="3.5" fill="#6b7280"/>
+</svg>'''
+
 def show_progress():
-    st.markdown(
-        '<span style="font-size:2.1rem;font-weight:800;color:#2e7d32;'
-        'letter-spacing:-0.5px;font-family:Georgia,serif;">ReForm</span>'
-        '<span style="font-size:0.85rem;color:#6b7280;margin-left:10px;">'
-        'C&amp;D Waste Estimation Tool</span>',
-        unsafe_allow_html=True,
-    )
-    st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+    hcol1, hcol2 = st.columns([1, 7])
+    with hcol1:
+        st.markdown(REFORM_LOGO, unsafe_allow_html=True)
+    with hcol2:
+        st.markdown(
+            '<div style="padding-top:6px">'
+            '<span style="font-family:DM Serif Display,serif;font-size:1.7rem;font-weight:700;color:#ef4444">Re</span>'
+            '<span style="font-family:DM Serif Display,serif;font-size:1.7rem;font-weight:700;color:#1a1a2e">Form</span>'
+            '<span style="font-family:DM Sans,sans-serif;font-size:0.82rem;color:#6b7280;margin-left:10px;">'
+            'C&amp;D Waste Estimation Tool</span></div>',
+            unsafe_allow_html=True)
+    st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
     cols = st.columns(len(STEPS))
     for i, (col, label) in enumerate(zip(cols, STEPS)):
         step_no = i + 1
@@ -1189,211 +1025,324 @@ def find_nearest_plants(user_location_str, n=5):
     return [{**p, "Distance_km": None} for p in RECYCLING_PLANTS[:n]]
 
 
+def _pdf_pie(vals, labels, colors_list, title):
+    """Render a pie chart to a ReportLab Image, sized from the actual saved PNG."""
+    import matplotlib; matplotlib.use("Agg")
+    import matplotlib.pyplot as plt, io
+    from PIL import Image as PILImage
+    from reportlab.platypus import Image as RLImg
+
+    fig, ax = plt.subplots(figsize=(3.4, 3.4))
+    _, _, autotexts = ax.pie(
+        vals, labels=None, colors=colors_list,
+        startangle=140, autopct="%1.0f%%", pctdistance=0.78,
+        wedgeprops=dict(linewidth=0.5, edgecolor="white"))
+    for at in autotexts:
+        at.set_fontsize(7); at.set_fontfamily("serif")
+    ax.set_title(title, fontsize=9, fontweight="bold", pad=7,
+                 fontfamily="serif")
+    ax.legend(labels, loc="lower center", bbox_to_anchor=(0.5, -0.22),
+              ncol=2, fontsize=6, frameon=False, prop={"family": "serif"})
+    fig.subplots_adjust(bottom=0.20, top=0.88)
+
+    buf2 = io.BytesIO()
+    fig.savefig(buf2, format="png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    buf2.seek(0)
+
+    # Measure actual pixel dimensions so RLImg never clips
+    pil = PILImage.open(buf2); w_px, h_px = pil.size; buf2.seek(0)
+    target_w = 3.4 * 72   # points (~5.8 cm)
+    target_h = target_w * h_px / w_px
+    return RLImg(buf2, width=target_w, height=target_h)
+
+
+def _pdf_bar(mats_list, er_dict):
+    """Render the stacked emission bar chart, sized from the actual PNG."""
+    import matplotlib; matplotlib.use("Agg")
+    import matplotlib.pyplot as plt, io
+    from PIL import Image as PILImage
+    from reportlab.platypus import Image as RLImg
+
+    stages  = ["A1A3","A4","A5","C1","C2","C3","C4"]
+    slabels = ["A1-A3","A4","A5","C1","C2","C3","C4"]
+    scols   = ["#1d4ed8","#3b82f6","#93c5fd","#dc2626","#f87171","#16a34a","#4ade80"]
+
+    fig, ax = plt.subplots(figsize=(6.8, 3.2))
+    bottoms = [0.0] * len(mats_list)
+    for sk, sl, sc in zip(stages, slabels, scols):
+        vals = [er_dict[m].get(sk, 0) for m in mats_list]
+        ax.bar(mats_list, vals, bottom=bottoms, label=sl, color=sc, width=0.52)
+        bottoms = [b + v for b, v in zip(bottoms, vals)]
+
+    ax.set_ylabel("kg CO\u2082e", fontsize=8, fontfamily="serif")
+    ax.set_title("Emission Stages by Material", fontsize=9.5,
+                 fontweight="bold", fontfamily="serif")
+    ax.legend(loc="upper right", fontsize=7.5, frameon=False, ncol=4,
+              prop={"family": "serif"})
+    plt.xticks(rotation=22, ha="right", fontsize=7.5,
+               fontfamily="serif")
+    fig.subplots_adjust(bottom=0.24, top=0.90)
+
+    buf2 = io.BytesIO()
+    fig.savefig(buf2, format="png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    buf2.seek(0)
+
+    pil = PILImage.open(buf2); w_px, h_px = pil.size; buf2.seek(0)
+    target_w = 6.8 * 72
+    target_h = target_w * h_px / w_px
+    return RLImg(buf2, width=target_w, height=target_h)
+
+
 def generate_pdf_report(project, waste_table, emission_results, circ_scores, circ_aggregate, benefits):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                     Paragraph, Spacer, HRFlowable)
     from reportlab.lib.units import cm
 
+    # ── Palette ──────────────────────────────────────────────────────────────
     GREEN  = colors.HexColor("#2e7d32")
     DARK   = colors.HexColor("#1a1a1a")
     LGREY  = colors.HexColor("#f5f5f5")
     MGREY  = colors.HexColor("#e0e0e0")
+    PCOLS  = ["#ef4444","#f97316","#eab308","#22c55e","#3b82f6",
+              "#8b5cf6","#ec4899","#14b8a6","#6b7280"]
+
+    mats_p = [r["material"] for r in waste_table]
+    page_w = A4[0] - 2 * 1.8 * cm   # usable width
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4,
-          leftMargin=2*cm, rightMargin=2*cm,
-          topMargin=2*cm, bottomMargin=2.2*cm)
+          leftMargin=1.8*cm, rightMargin=1.8*cm,
+          topMargin=1.8*cm, bottomMargin=2.2*cm)
 
-    styles = getSampleStyleSheet()
+    # ── Styles (all Times New Roman / serif) ─────────────────────────────────
     TNR   = "Times-Roman"
     TNR_B = "Times-Bold"
     TNR_I = "Times-Italic"
 
+    styles = getSampleStyleSheet()
+
     title_sty = ParagraphStyle("rtitle",
-        fontName=TNR_B, fontSize=30, textColor=GREEN,
-        alignment=1, spaceAfter=2)
+        fontName=TNR_B, fontSize=28, textColor=GREEN,
+        alignment=1,   # centre
+        spaceAfter=2, spaceBefore=0)
+
     sub_sty = ParagraphStyle("rsub",
-        fontName=TNR_I, fontSize=11,
-        textColor=colors.HexColor("#555555"),
-        alignment=1, spaceAfter=8)
+        fontName=TNR_I, fontSize=11, textColor=colors.HexColor("#555555"),
+        alignment=1, spaceAfter=6)
+
     h2_sty = ParagraphStyle("rh2",
         fontName=TNR_B, fontSize=11, textColor=DARK,
-        spaceBefore=10, spaceAfter=4)
+        spaceBefore=10, spaceAfter=4,
+        borderPad=4, leftIndent=0)
+
     body_sty = ParagraphStyle("rbody",
-        fontName=TNR, fontSize=9, leading=13)
+        fontName=TNR, fontSize=9, leading=13, textColor=DARK)
+
     sm_sty = ParagraphStyle("rsm",
         fontName=TNR_I, fontSize=7, leading=10,
         textColor=colors.HexColor("#777777"))
 
+    # ── Table style factory ───────────────────────────────────────────────────
     def ts(header_col):
         return TableStyle([
-            ("BACKGROUND",     (0,0), (-1,0), header_col),
-            ("TEXTCOLOR",      (0,0), (-1,0), colors.white),
-            ("FONTNAME",       (0,0), (-1,0), TNR_B),
-            ("FONTSIZE",       (0,0), (-1,0), 8.5),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, LGREY]),
-            ("GRID",           (0,0), (-1,-1), 0.35, MGREY),
-            ("FONTNAME",       (0,1), (-1,-1), TNR),
-            ("FONTSIZE",       (0,1), (-1,-1), 8.5),
-            ("ALIGN",          (1,0), (-1,-1), "CENTER"),
-            ("VALIGN",         (0,0), (-1,-1), "MIDDLE"),
-            ("TOPPADDING",     (0,0), (-1,-1), 4),
-            ("BOTTOMPADDING",  (0,0), (-1,-1), 4),
-            ("LEFTPADDING",    (0,0), (-1,-1), 7),
-            ("RIGHTPADDING",   (0,0), (-1,-1), 7),
+            ("BACKGROUND",  (0, 0), (-1, 0), header_col),
+            ("TEXTCOLOR",   (0, 0), (-1, 0), colors.white),
+            ("FONTNAME",    (0, 0), (-1, 0), TNR_B),
+            ("FONTSIZE",    (0, 0), (-1, 0), 8.5),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LGREY]),
+            ("GRID",        (0, 0), (-1, -1), 0.35, MGREY),
+            ("FONTNAME",    (0, 1), (-1, -1), TNR),
+            ("FONTSIZE",    (0, 1), (-1, -1), 8.5),
+            ("ALIGN",       (1, 0), (-1, -1), "CENTER"),
+            ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING",  (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING",(0,0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING",(0, 0), (-1, -1), 7),
         ])
 
-    E = []
+    # ── Helper: section heading with green left rule ──────────────────────────
+    def section(txt):
+        return [
+            Paragraph(txt, h2_sty),
+            HRFlowable(width="100%", thickness=0.6,
+                       color=colors.HexColor("#cccccc"), spaceAfter=4),
+        ]
 
-    # ── Title ──────────────────────────────────────────────────────────────
-    E.append(Spacer(1, 0.1*cm))
+    E = []  # story
+
+    # ── TITLE ─────────────────────────────────────────────────────────────────
+    E.append(Spacer(1, 0.2*cm))
     E.append(Paragraph("ReForm", title_sty))
     E.append(Paragraph("C&amp;D Waste Estimation Report", sub_sty))
-    E.append(HRFlowable(width="100%", thickness=1.5, color=GREEN, spaceAfter=8))
+    E.append(HRFlowable(width="100%", thickness=1.5,
+                        color=GREEN, spaceAfter=8))
 
-    # ── Project info grid ───────────────────────────────────────────────────
+    # ── PROJECT INFO ──────────────────────────────────────────────────────────
     inf = [
-        ["Project",  project.get("name","—"),    "Location", project.get("location","—")],
-        ["Type",     project.get("construction_type","—"), "Building", project.get("building_type","—")],
-        ["Area",     f"{project.get('builtup_area','—')} m²", "Plot Area", f"{project.get('plot_area','—')} m²"],
+        ["Project",  project.get("name", "—"),
+         "Location", project.get("location", "—")],
+        ["Type",     project.get("construction_type", "—"),
+         "Building", project.get("building_type", "—")],
+        ["Area",     f"{project.get('builtup_area','—')} m²",
+         "Floors",   str(project.get("num_floors", "—"))],
     ]
-    it = Table(inf, colWidths=[2.2*cm, 5.7*cm, 2.2*cm, 5.7*cm])
+    it = Table(inf, colWidths=[2.0*cm, 5.8*cm, 2.0*cm, 5.8*cm])
     it.setStyle(TableStyle([
-        ("FONTNAME",     (0,0),(0,-1), TNR_B), ("FONTNAME",(2,0),(2,-1), TNR_B),
-        ("FONTNAME",     (1,0),(1,-1), TNR),   ("FONTNAME",(3,0),(3,-1), TNR),
-        ("FONTSIZE",     (0,0),(-1,-1), 9),
-        ("BACKGROUND",   (0,0),(-1,-1), LGREY),
-        ("GRID",         (0,0),(-1,-1), 0.3, MGREY),
-        ("TOPPADDING",   (0,0),(-1,-1), 5),
-        ("BOTTOMPADDING",(0,0),(-1,-1), 5),
-        ("LEFTPADDING",  (0,0),(-1,-1), 8),
+        ("FONTNAME",    (0, 0), (0, -1), TNR_B),
+        ("FONTNAME",    (2, 0), (2, -1), TNR_B),
+        ("FONTNAME",    (1, 0), (1, -1), TNR),
+        ("FONTNAME",    (3, 0), (3, -1), TNR),
+        ("FONTSIZE",    (0, 0), (-1, -1), 9),
+        ("BACKGROUND",  (0, 0), (-1, -1), LGREY),
+        ("GRID",        (0, 0), (-1, -1), 0.3, MGREY),
+        ("TOPPADDING",  (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",(0,0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
     ]))
-    E.append(it)
-    E.append(Spacer(1, 0.4*cm))
+    E.append(it); E.append(Spacer(1, 0.4*cm))
 
-    # ── KPI bar ─────────────────────────────────────────────────────────────
-    tw  = sum(r["waste_tonnes"] for r in waste_table)
-    tg  = sum(r["total_gwp"]   for r in emission_results.values()) / 1000
-    ta  = sum(b["avoided_emission_kgco2e"] for b in benefits.values()) / 1000
-    tv  = sum(b["virgin_material_savings_inr"] for b in benefits.values())
+    # ── KPI SUMMARY BAR ───────────────────────────────────────────────────────
+    tw = sum(r["waste_tonnes"] for r in waste_table)
+    tg = sum(r["total_gwp"] for r in emission_results.values()) / 1000
+    ta = sum(b["avoided_emission_kgco2e"] for b in benefits.values()) / 1000
+    tv = sum(b["virgin_material_savings_inr"] for b in benefits.values())
 
-    page_w = A4[0] - 4*cm
     kpi = Table([[
         f"{tw:.2f} t\nTotal Waste",
-        f"{tg:.2f} tCO\u2082e\nTotal GWP",
+        f"{tg:.2f} tCO\u2082e\nGWP",
         f"{circ_aggregate*100:.1f}/100\nCircularity",
         f"{ta:.2f} tCO\u2082e\nAvoided",
         f"\u20b9{tv:,.0f}\nVirgin Savings",
-    ]], colWidths=[page_w/5]*5)
+    ]], colWidths=[page_w / 5] * 5)
     kpi.setStyle(TableStyle([
-        ("BACKGROUND",   (0,0),(-1,-1), colors.HexColor("#1a1a1a")),
-        ("TEXTCOLOR",    (0,0),(-1,-1), colors.white),
-        ("FONTNAME",     (0,0),(-1,-1), TNR_B),
-        ("FONTSIZE",     (0,0),(-1,-1), 8),
-        ("ALIGN",        (0,0),(-1,-1), "CENTER"),
-        ("VALIGN",       (0,0),(-1,-1), "MIDDLE"),
-        ("TOPPADDING",   (0,0),(-1,-1), 9),
-        ("BOTTOMPADDING",(0,0),(-1,-1), 9),
-        ("LINEAFTER",    (0,0),(-2,-1), 0.5, colors.HexColor("#444444")),
+        ("BACKGROUND",  (0, 0), (-1, -1), colors.HexColor("#1a1a1a")),
+        ("TEXTCOLOR",   (0, 0), (-1, -1), colors.white),
+        ("FONTNAME",    (0, 0), (-1, -1), TNR_B),
+        ("FONTSIZE",    (0, 0), (-1, -1), 8),
+        ("ALIGN",       (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",  (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING",(0,0), (-1, -1), 9),
+        ("LINEAFTER",   (0, 0), (-2, -1), 0.5, colors.HexColor("#444444")),
     ]))
-    E.append(kpi)
-    E.append(Spacer(1, 0.5*cm))
+    E.append(kpi); E.append(Spacer(1, 0.55*cm))
 
-    # ── Section 1 — Waste ──────────────────────────────────────────────────
-    E.append(Paragraph("1 \u2014 Waste Estimation", h2_sty))
-    E.append(HRFlowable(width="100%", thickness=0.5, color=MGREY, spaceAfter=4))
+    # ── SECTION 1 — WASTE ─────────────────────────────────────────────────────
+    E += section("1 — Waste Estimation")
     wd = [["Material", "Waste (t)", "% of Total"]]
     for r in waste_table:
-        wd.append([r["material"], f"{r['waste_tonnes']:.2f}", f"{r['waste_tonnes']/tw*100:.1f}%"])
+        wd.append([r["material"],
+                   f"{r['waste_tonnes']:.2f}",
+                   f"{r['waste_tonnes']/tw*100:.1f}%"])
     wt2 = Table(wd, colWidths=[9*cm, 3.5*cm, 3.5*cm])
     wt2.setStyle(ts(colors.HexColor("#1b5e20")))
     E.append(wt2)
     E.append(Paragraph(WASTE_RATE_SOURCE, sm_sty))
-    E.append(Spacer(1, 0.4*cm))
+    E.append(Spacer(1, 0.45*cm))
 
-    # ── Section 2 — Environmental Impact ──────────────────────────────────
+    # ── SECTION 2 — ENVIRONMENTAL IMPACT ─────────────────────────────────────
     if emission_results:
-        E.append(Paragraph("2 \u2014 Environmental Impact", h2_sty))
-        E.append(HRFlowable(width="100%", thickness=0.5, color=MGREY, spaceAfter=4))
-        ed = [["Material","A1\u20133\n(kg CO\u2082e)","Transport\n(kg CO\u2082e)",
-               "EOL\n(kg CO\u2082e)","Total GWP\n(kg CO\u2082e)","AP\n(kg SO\u2082e)","EP\n(kg PO\u2084e)"]]
-        for mat, r in emission_results.items():
-            ed.append([mat, f"{r['A1A3']:.1f}",
+        E += section("2 — Environmental Impact")
+        ed = [["Material", "A1–A3\n(kg CO₂e)", "Transport\n(kg CO₂e)",
+               "EOL\n(kg CO₂e)", "Total GWP\n(kg CO₂e)",
+               "AP\n(kg SO₂e)", "EP\n(kg PO₄e)"]]
+        for m, r in emission_results.items():
+            ed.append([m,
+                       f"{r['A1A3']:.1f}",
                        f"{r['A4']+r['C1']+r['C2']:.1f}",
                        f"{r['C3']+r['C4']:.1f}",
                        f"{r['total_gwp']:.1f}",
-                       f"{r['AP']:.2f}", f"{r['EP']:.3f}"])
+                       f"{r['AP']:.2f}",
+                       f"{r['EP']:.3f}"])
         et = Table(ed, colWidths=[3.5*cm,2.2*cm,2.5*cm,2.2*cm,2.4*cm,2.2*cm,2.0*cm])
         et.setStyle(ts(colors.HexColor("#0d47a1")))
         E.append(et)
         E.append(Paragraph(GWP_SOURCE, sm_sty))
-        E.append(Spacer(1, 0.4*cm))
+        E.append(Spacer(1, 0.45*cm))
 
-    # ── Section 3 — Circularity ────────────────────────────────────────────
-    E.append(Paragraph(f"3 \u2014 Circularity  |  Score: {circ_aggregate*100:.1f} / 100", h2_sty))
-    E.append(HRFlowable(width="100%", thickness=0.5, color=MGREY, spaceAfter=4))
-    cd = [["Material","Reuse %","Recycle %","Landfill %","MCI Score / 100"]]
-    for mat, sc in circ_scores.items():
-        eol = emission_results.get(mat,{}).get("eol",{})
-        cd.append([mat, f"{eol.get('Reuse',0)}", f"{eol.get('Recycle',0)}",
-                   f"{eol.get('Landfill',0)}", f"{sc*100:.1f}"])
-    ct = Table(cd, colWidths=[6*cm,2.5*cm,2.5*cm,2.5*cm,2.5*cm])
+    # ── SECTION 3 — CIRCULARITY ───────────────────────────────────────────────
+    E += section(f"3 — Circularity  |  Aggregate Score: {circ_aggregate*100:.1f} / 100")
+    cd = [["Material", "Reuse %", "Recycle %", "Landfill %", "MCI Score / 100"]]
+    for m, sc in circ_scores.items():
+        eol = emission_results.get(m, {}).get("eol", {})
+        cd.append([m,
+                   f"{eol.get('Reuse',0)}",
+                   f"{eol.get('Recycle',0)}",
+                   f"{eol.get('Landfill',0)}",
+                   f"{sc*100:.1f}"])
+    ct = Table(cd, colWidths=[6*cm, 2.5*cm, 2.5*cm, 2.5*cm, 2.5*cm])
     ct.setStyle(ts(colors.HexColor("#1b5e20")))
-    E.append(ct)
-    E.append(Spacer(1, 0.4*cm))
+    E.append(ct); E.append(Spacer(1, 0.45*cm))
 
-    # ── Section 4 — Economic Benefits ─────────────────────────────────────
+    # ── SECTION 4 — ECONOMIC BENEFITS ────────────────────────────────────────
     if benefits:
-        E.append(Paragraph("4 \u2014 Economic &amp; Environmental Benefits", h2_sty))
-        E.append(HRFlowable(width="100%", thickness=0.5, color=MGREY, spaceAfter=4))
+        E += section("4 — Economic & Environmental Benefits")
         td2 = sum(b["landfill_diverted_t"] for b in benefits.values())
         tls = sum(b["landfill_cost_saved_inr"] for b in benefits.values())
-        sample_lf = list(benefits.values())[0].get("landfill_cost_per_tonne", DEFAULT_LANDFILL_COST)
-
-        # Summary KPIs
-        bd = [["Metric","Value"],
-              ["Avoided Emissions",       f"{ta:.3f} t CO\u2082e"],
-              ["Virgin Material Savings",  f"\u20b9{tv:,.0f}"],
-              ["Landfill Diverted",        f"{td2:.2f} t"],
-              ["Landfill Cost Saved",      f"\u20b9{tls:,.0f}"],
-              ["Landfill Cost (unit)",     f"\u20b9{sample_lf}/t — {project.get('location','')}"],
+        bd = [
+            ["Metric", "Value"],
+            ["Avoided Emissions",      f"{ta:.2f} t CO\u2082e"],
+            ["Virgin Material Savings", f"\u20b9{tv:,.0f}"],
+            ["Landfill Diverted",       f"{td2:.2f} t"],
+            ["Landfill Cost Saved",     f"\u20b9{tls:,.0f}"],
         ]
-        bt = Table(bd, colWidths=[9*cm,7*cm])
+        bt = Table(bd, colWidths=[9*cm, 7*cm])
         bt.setStyle(ts(colors.HexColor("#b45309")))
-        E.append(bt)
-        E.append(Spacer(1, 0.3*cm))
+        E.append(bt); E.append(Spacer(1, 0.45*cm))
 
-        # Per-material breakdown
-        E.append(Paragraph("Material Recovery Detail", ParagraphStyle("rmid",
-            fontName=TNR_B, fontSize=9, textColor=DARK, spaceAfter=3)))
-        md = [["Material","Recycled\n(t)","Reused\n(t)","Landfilled\n(t)",
-               "Diverted\n(t)","Avoided\n(tCO\u2082e)","Virgin Sav.\n(\u20b9)"]]
-        for mat, b in benefits.items():
-            md.append([mat,
-                f"{b['recycled_t']:.2f}", f"{b['reused_t']:.2f}",
-                f"{b['landfill_t']:.2f}", f"{b['landfill_diverted_t']:.2f}",
-                f"{b['avoided_emission_kgco2e']/1000:.3f}",
-                f"\u20b9{b['virgin_material_savings_inr']:,.0f}"])
-        mt = Table(md, colWidths=[3.2*cm,1.8*cm,1.8*cm,1.8*cm,1.8*cm,2.0*cm,3.4*cm])
-        mt.setStyle(ts(colors.HexColor("#4a1942")))
-        E.append(mt)
-        E.append(Spacer(1, 0.4*cm))
+    # ── SECTION 5 — ANALYTICS (charts) ───────────────────────────────────────
+    E += section("5 — Analytics")
 
-    # ── Data Sources ───────────────────────────────────────────────────────
-    E.append(Paragraph("Data Sources", h2_sty))
-    E.append(HRFlowable(width="100%", thickness=0.5, color=MGREY, spaceAfter=4))
-    sample_lf2 = list(benefits.values())[0].get("landfill_cost_per_tonne", DEFAULT_LANDFILL_COST) if benefits else DEFAULT_LANDFILL_COST
+    mats_er = [m for m in mats_p if m in emission_results]
+    pclr_er = [PCOLS[i % len(PCOLS)] for i in range(len(mats_er))]
+    gwp_v  = [emission_results[m]["total_gwp"] for m in mats_er]
+    wst_v  = [r["waste_tonnes"] for r in waste_table if r["material"] in mats_er]
+    wst_l  = [r["material"]     for r in waste_table if r["material"] in mats_er]
+    crc_v  = [circ_scores.get(m, 0) * emission_results[m]["qty_t"] for m in mats_er]
+    if sum(crc_v) == 0:
+        crc_v = [1] * len(mats_er)
+
+    pie_w = [PCOLS[i % len(PCOLS)] for i in range(len(wst_l))]
+
+    # Three pie charts in a row; each returns an RLImg sized from actual pixels
+    pie_row = Table([[
+        _pdf_pie(wst_v, wst_l, pie_w,  "Waste"),
+        _pdf_pie(gwp_v, mats_er, pclr_er, "GWP"),
+        _pdf_pie(crc_v, mats_er, pclr_er, "Circularity"),
+    ]], colWidths=[page_w / 3] * 3)
+    pie_row.setStyle(TableStyle([
+        ("ALIGN",  (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    E.append(pie_row)
+    E.append(Spacer(1, 0.4*cm))
+
+    # Bar chart — also pixel-measured
+    E.append(_pdf_bar(mats_er, emission_results))
+    E.append(Spacer(1, 0.6*cm))
+
+    # ── DATA SOURCES ─────────────────────────────────────────────────────────
+    E += section("Data Sources")
+    sample_lf = (list(benefits.values())[0].get("landfill_cost_per_tonne",
+                 DEFAULT_LANDFILL_COST) if benefits else DEFAULT_LANDFILL_COST)
     srcs = [
-        "CSE (2020). 'Another Brick off the Wall'. Centre for Science and Environment, New Delhi.",
-        "IFC/thinkstep (2017). EDGE India Construction Materials Database. edgebuildings.com",
-        GWP_SOURCE, f"AP: {AP_SOURCE}", f"EFW: {EFW_SOURCE}",
+        "CSE (2020). 'Another Brick off the Wall'. CSE, New Delhi. Table 4, p.30.",
+        "IFC/thinkstep (2017). EDGE India Construction Materials Database.",
+        GWP_SOURCE,
+        f"AP: {AP_SOURCE}",
+        f"EFW: {EFW_SOURCE}",
         "IPCC (2006). Guidelines for National GHG Inventories, Vol. 2.",
-        "Jang et al. (2022). Materials 15, 5047. DOI: 10.3390/ma15145047",
+        "Jang et al. (2022). Materials 15, 5047. DOI: 10.3390/ma15145047.",
         "CEA (2024). CO\u2082 Baseline Database for the Indian Power Sector v18.",
-        f"Landfill: \u20b9{sample_lf2}/tonne. {LANDFILL_COST_SOURCE}",
-        VIRGIN_PRICE_SOURCE, PLANTS_SOURCE,
+        f"Landfill tipping fee: \u20b9{sample_lf}/tonne. {LANDFILL_COST_SOURCE}",
+        VIRGIN_PRICE_SOURCE,
+        PLANTS_SOURCE,
         "MoEFCC (2016). C&D Waste Management Rules.",
         "EMF (2015). Material Circularity Indicator (MCI) Technical Appendix.",
     ]
@@ -1403,6 +1352,7 @@ def generate_pdf_report(project, waste_table, emission_results, circ_scores, cir
     doc.build(E)
     buf.seek(0)
     return buf
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1416,27 +1366,36 @@ def page_project_info():
         c1, c2 = st.columns(2)
         with c1:
             name = st.text_input("Project Name", placeholder="e.g., Greenfield Residential Complex")
-            location = st.text_input("City / Location", placeholder="e.g., Mumbai")
+            city = st.selectbox("City", [
+                "Ahmedabad","Agra","Amritsar","Aurangabad","Bengaluru","Bhopal","Bhubaneswar",
+                "Chandigarh","Chennai","Coimbatore","Cuttack","Delhi","Durgapur","Faridabad",
+                "Ghaziabad","Greater Noida","Gurugram","Guwahati","Gwalior","Howrah","Hyderabad",
+                "Indore","Jabalpur","Jaipur","Jalandhar","Jodhpur","Kanpur","Kochi","Kolkata",
+                "Kozhikode","Kota","Lucknow","Ludhiana","Madurai","Mangaluru","Meerut","Mumbai",
+                "Mysuru","Nagpur","Nashik","Noida","Patna","Pune","Prayagraj","Rajkot","Raipur",
+                "Ranchi","Salem","Solapur","Surat","Thane","Thiruvananthapuram","Thrissur",
+                "Tirupati","Trichy","Udaipur","Vadodara","Varanasi","Vijayawada","Visakhapatnam",
+                "Warangal","Other"])
+            locality = st.text_input("Locality / Area", placeholder="e.g., Banjara Hills, Whitefield")
             builtup = st.number_input("Built-up Area (m²)", min_value=1.0, value=1000.0, step=50.0)
         with c2:
             ctype = st.selectbox("Project Type", ["Construction", "Demolition", "Redevelopment"])
-            building_type = st.selectbox("Building Type", ["Residential", "Commercial", "Industrial", "Infrastructure"])
-            plot_area = st.number_input("Plot Area (m²)", min_value=1.0, value=1500.0, step=50.0)
+            building_type = st.selectbox("Building Type", ["Residential", "Commercial", "Institutional"])
+            num_floors = st.number_input("Number of Floors", min_value=1, value=4, step=1)
 
-        st.markdown('<div class="source-note">💡 Building type affects waste generation rate. Source: CSE (2020) "Another Brick off the Wall" Table 4 & p.30. Industrial/Infrastructure types use Commercial as proxy for environmental benchmarks (no India-specific peer-reviewed LCA data).</div>', unsafe_allow_html=True)
+        st.markdown('<div class="source-note">💡 Waste estimated using CSE (2020) "Another Brick off the Wall" benchmarks. Building type recorded for data purposes.</div>', unsafe_allow_html=True)
         submitted = st.form_submit_button("Next →", type="primary", use_container_width=True)
         if submitted:
-            if not name or not location:
-                st.error("Please fill in Project Name and Location.")
+            location_full = f"{locality.strip()}, {city}" if locality.strip() else city
+            if not name:
+                st.error("Please fill in Project Name.")
             else:
                 st.session_state.project = {
-                    "name": name, "location": location,
+                    "name": name, "location": location_full,
+                    "city": city, "locality": locality.strip(),
                     "construction_type": ctype, "building_type": building_type,
-                    "builtup_area": builtup, "plot_area": plot_area,
+                    "builtup_area": builtup, "num_floors": int(num_floors),
                 }
-                # Handle Redevelopment = Demolition + Construction
-                if ctype == "Redevelopment":
-                    st.session_state.project["construction_type"] = "Redevelopment"
                 go(2)
                 st.rerun()
 
@@ -1466,11 +1425,11 @@ def page_data_input():
     with col3:
         with st.container(border=True):
             st.markdown("#### 📏 Area-Based Estimate")
-            st.markdown("Only have the floor area? Estimate waste based on per-m² benchmarks from CSE (2020) Table 4. Industrial/Infrastructure use Commercial as proxy.")
+            st.markdown("Only have the floor area? Estimate waste based on per-m² benchmarks from CSE (2020) Table 4.")
             st.markdown("**Indicative** — for early-stage estimates")
             ab = st.button("Use Area-Based Estimate", key="ab", use_container_width=True)
 
-    st.markdown(f'<div class="source-note">📚 Area-based rates from: {WASTE_RATE_SOURCE}. Note: Industrial and Infrastructure use Commercial as proxy for per-m² environmental benchmarks.</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="source-note">📚 Area-based rates: {WASTE_RATE_SOURCE}</div>', unsafe_allow_html=True)
 
     if bim: st.session_state.input_method = "bim"; go(3); st.rerun()
     if mq:  st.session_state.input_method = "material"; go(3); st.rerun()
@@ -1535,19 +1494,22 @@ def page_waste_estimation():
         st.caption("Tick only what actually exists. Concrete, Brick, Soil, Steel ticked by default for RCC buildings.")
 
         defaults_checked = {"Concrete", "Brick/Masonry", "Soil/Sand/Gravel", "Steel/Metal"}
+        SELECTABLE = [m for m in ALL_MATERIALS if m != "Others"]
         if "ab_sel" not in st.session_state:
-            st.session_state.ab_sel = {m: (m in defaults_checked) for m in ALL_MATERIALS}
+            st.session_state.ab_sel = {m: (m in defaults_checked) for m in SELECTABLE}
 
+        st.caption("✅ Others is always included — it absorbs any remaining % automatically.")
         c1, c2, c3 = st.columns(3)
         cols3 = [c1, c2, c3]
-        for i, mat in enumerate(ALL_MATERIALS):
+        for i, mat in enumerate(SELECTABLE):
             with cols3[i % 3]:
                 st.session_state.ab_sel[mat] = st.checkbox(
                     mat,
                     value=st.session_state.ab_sel.get(mat, mat in defaults_checked),
                     key=f"abchk_{mat}")
 
-        selected = [m for m in ALL_MATERIALS if st.session_state.ab_sel.get(m, False)]
+        selected_no_others = [m for m in SELECTABLE if st.session_state.ab_sel.get(m, False)]
+        selected = selected_no_others + ["Others"]
 
         if not selected:
             st.warning("Select at least one material to continue.")
@@ -1574,7 +1536,7 @@ def page_waste_estimation():
         hdr[2].markdown("**Estimated Waste (t)**")
 
         live = {}
-        for mat in selected:
+        for mat in selected_no_others:
             row = st.columns([3, 2, 3])
             row[0].write(mat)
             pct = row[1].number_input(
@@ -1585,13 +1547,20 @@ def page_waste_estimation():
             wt = pct / 100.0 * total_waste_kg / 1000.0
             row[2].write(f"**{wt:.3f} t**")
 
+        others_pct = round(max(0.0, 100.0 - sum(live.values())), 1)
+        live["Others"] = others_pct
+        oth_row = st.columns([3, 2, 3])
+        oth_row[0].markdown("**Others** *(auto)*")
+        oth_row[1].markdown(f"**{others_pct:.1f}%**")
+        oth_row[2].markdown(f"**{others_pct/100*total_waste_kg/1000:.3f} t**")
+
         pct_sum = sum(live.values())
-        if abs(pct_sum - 100.0) > 0.5:
-            st.warning(f"⚠️ Percentages sum to {pct_sum:.1f}% — must reach 100% before proceeding.")
+        if sum(live[m] for m in selected_no_others) > 100.0:
+            st.error("⚠️ Materials exceed 100% — reduce one. Others is floored at 0%.")
             ok_to_proceed = False
         else:
             total_est = pct_sum / 100.0 * total_waste_kg / 1000.0
-            st.success(f"✅ Total estimated waste: **{total_est:.2f} tonnes**")
+            st.success(f"✅ Sums to 100% — Total: **{total_est:.2f} t** (Others = {others_pct:.1f}% auto-filled)")
             ok_to_proceed = True
 
         st.caption(f"Composition basis: {COMP_SOURCE}")
@@ -1686,7 +1655,7 @@ def page_waste_estimation():
     elif method == "bim":
         st.markdown("""
         <div class="info-box">
-        <b>CircularBuild Dynamo Extractor — Step-by-Step Instructions</b><br><br>
+        <b>ReForm Dynamo Extractor — Step-by-Step Instructions</b><br><br>
         <b>What you need:</b> Autodesk Revit (2021 or later) with Dynamo 2.x installed.<br><br>
         <b>Step 1 — Download the script</b><br>
         Click the <b>Download Dynamo Script</b> button below to get <code>Extract_Materials.dyn</code>. Save it anywhere on your computer.<br><br>
@@ -1743,12 +1712,12 @@ def page_waste_estimation():
         """, unsafe_allow_html=True)
 
         uploaded = st.file_uploader(
-            "Upload CircularBuild Material Export (.xlsx or .csv)",
+            "Upload ReForm Material Export (.xlsx or .csv)",
             type=["csv", "xlsx"],
             help="Upload the Excel file generated by Extract_Materials.dyn from your Revit model"
         )
 
-        # ── CircularBuild material groups ──────────────────────────────────
+        # ── ReForm material groups ──────────────────────────────────
         CB_GROUPS = ["Concrete", "Brick/Masonry", "Soil/Sand/Gravel", "Steel/Metal",
                      "Wood/Timber", "Bitumen", "Plastic", "Glass", "Others"]
 
@@ -1780,7 +1749,7 @@ def page_waste_estimation():
         }
 
         def resolve_group(mat_name, cat_name=""):
-            """Map Revit material/category name to CircularBuild group."""
+            """Map Revit material/category name to ReForm group."""
             text = (mat_name + " " + cat_name).lower()
             for grp, kws in REVIT_KEYWORDS.items():
                 if any(k in text for k in kws):
@@ -1901,15 +1870,15 @@ def page_waste_estimation():
                         st.button("← Back", on_click=lambda: go(2), key="bim_back_empty")
                     else:
                         # ── Show mapping table ─────────────────────────────
-                        st.markdown("#### Material Mapping — Revit → CircularBuild Groups")
-                        st.caption("Each Revit material has been classified into a CircularBuild group using keyword matching. Review and adjust waste % below.")
+                        st.markdown("#### Material Mapping — Revit → ReForm Groups")
+                        st.caption("Each Revit material has been classified into a ReForm group using keyword matching. Review and adjust waste % below.")
 
                         map_rows = []
                         for g in CB_GROUPS:
                             if g not in agg: continue
                             d = agg[g]
                             map_rows.append({
-                                "CircularBuild Group":  g,
+                                "ReForm Group":  g,
                                 "Total Mass (tonnes)":  round(d["mass_kg"]/1000, 3),
                                 "Total Volume (m³)":    round(d["vol_m3"], 3),
                                 "No. of Revit rows":    d["count"],
@@ -2040,20 +2009,21 @@ def page_emissions_eol():
             with c2:
                 veh = st.selectbox("Transport Vehicle", vehicles, index=veh_idx, key=f"veh_{mat}")
                 dist = st.number_input("Distance to waste site (km)", min_value=0.0, value=float(ei.get(mat, {}).get("distance_km", 20)), key=f"dist_{mat}")
-                dist_c2 = st.number_input("C2: Distance to recycling/landfill (km)", min_value=0.0, value=float(ei.get(mat, {}).get("distance_km_c2", 10)), key=f"dist_c2_{mat}")
+                dist_c2 = st.number_input("Distance to recycling/landfill (km)", min_value=0.0, value=float(ei.get(mat, {}).get("distance_km_c2", 10)), key=f"dist_c2_{mat}")
 
             default_eol = DEFAULT_EOL.get(mat, {"Reuse": 0, "Recycle": 50, "Landfill": 40, "Incineration": 5, "Other": 5})
             cur_eol = ei.get(mat, {}).get("eol", default_eol)
             with c3:
-                st.markdown("**End-of-Life (%) — must sum to 100**")
-                reuse    = st.slider("Reuse %",        0, 100, int(cur_eol.get("Reuse",0)),    key=f"eol_reuse_{mat}")
-                recycle  = st.slider("Recycle %",      0, 100, int(cur_eol.get("Recycle",50)), key=f"eol_recycle_{mat}")
-                landfill = st.slider("Landfill %",     0, 100, int(cur_eol.get("Landfill",40)),key=f"eol_landfill_{mat}")
-                incin    = st.slider("Incineration %", 0, 100, int(cur_eol.get("Incineration",5)),key=f"eol_incin_{mat}")
-                other    = st.slider("Other %",        0, 100, int(cur_eol.get("Other",5)),    key=f"eol_other_{mat}")
-                total_eol = reuse + recycle + landfill + incin + other
-                if total_eol != 100:
-                    st.warning(f"EOL total = {total_eol}% (must be 100%)")
+                st.markdown("**End-of-Life routing** — remaining % goes automatically to **Landfill**")
+                reuse   = st.slider("Reuse %",        0, 100, int(cur_eol.get("Reuse",0)),       key=f"eol_reuse_{mat}")
+                recycle = st.slider("Recycle %",      0, 100, int(cur_eol.get("Recycle",50)),     key=f"eol_recycle_{mat}")
+                incin   = st.slider("Incineration %", 0, 100, int(cur_eol.get("Incineration",5)), key=f"eol_incin_{mat}")
+                landfill = max(0, 100 - reuse - recycle - incin)
+                other = 0
+                if (reuse + recycle + incin) > 100:
+                    st.error("⚠️ Exceeds 100% — reduce a slider. Landfill = 0%.")
+                else:
+                    st.metric("↳ Landfill (auto)", f"{landfill}%")
 
             ei[mat] = {
                 "sub_type": sub, "vehicle": veh,
@@ -2084,10 +2054,7 @@ def page_emissions_eol():
             # ── Log summary row to Google Sheets (silent) ────────────
             log_to_sheets(
                 proj=st.session_state.project,
-                waste_table=waste_table,
-                emission_inputs=ei,
                 emission_results=emission_results,
-                circ_scores=circ_scores,
                 circ_aggregate=circ_aggregate,
                 benefits=benefits,
             )
@@ -2142,7 +2109,7 @@ def page_results():
     st.divider()
 
     # ── TABS ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🗑️ Waste", "🌍 Emissions", "♻️ Circularity", "💰 Economy", "📍 Recycling Plants"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🗑️ Waste", "🌍 Emissions", "♻️ Circularity", "💰 Economy", "📍 Recycling Plants", "📊 Analytics"])
 
     # ── TAB 1: WASTE ──────────────────────────────────────────────────────
     with tab1:
@@ -2382,6 +2349,58 @@ def page_results():
         df_all.columns = ["City", "Location", "Capacity (TPD)"]
         st.dataframe(df_all, use_container_width=True, hide_index=True)
 
+    with tab6:
+        import matplotlib; matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        PCOLS6 = ["#ef4444","#f97316","#eab308","#22c55e","#3b82f6","#8b5cf6","#ec4899","#14b8a6","#6b7280"]
+        mats6  = list(er.keys())
+        cmap6  = {m: PCOLS6[i % len(PCOLS6)] for i, m in enumerate(mats6)}
+
+        def make_pie6(ax, vals, labels, colors, title):
+            ax.pie(vals, labels=None, colors=colors, startangle=140,
+                   autopct="%1.1f%%", pctdistance=0.78,
+                   wedgeprops=dict(linewidth=0.5, edgecolor="white"))
+            ax.set_title(title, fontsize=10, fontweight="bold", pad=8)
+            patches = [mpatches.Patch(color=c, label=l) for c,l in zip(colors, labels)]
+            ax.legend(handles=patches, loc="lower center", bbox_to_anchor=(0.5,-0.28), ncol=2, fontsize=6.5, frameon=False)
+
+        st.markdown("#### Material Contribution")
+        pc1, pc2, pc3 = st.columns(3)
+        with pc1:
+            fig, ax = plt.subplots(figsize=(3.8,3.8))
+            wv = [r["waste_tonnes"] for r in wt if r["material"] in mats6]
+            wl = [r["material"]     for r in wt if r["material"] in mats6]
+            make_pie6(ax, wv, wl, [cmap6.get(m,"#ccc") for m in wl], "Waste by Material")
+            plt.tight_layout(); st.pyplot(fig, use_container_width=True); plt.close(fig)
+        with pc2:
+            fig, ax = plt.subplots(figsize=(3.8,3.8))
+            gv = [er[m]["total_gwp"] for m in mats6]
+            make_pie6(ax, gv, mats6, [cmap6[m] for m in mats6], "GWP by Material")
+            plt.tight_layout(); st.pyplot(fig, use_container_width=True); plt.close(fig)
+        with pc3:
+            fig, ax = plt.subplots(figsize=(3.8,3.8))
+            cv = [cs.get(m,0)*er[m]["qty_t"] for m in mats6]
+            if sum(cv)==0: cv=[1]*len(mats6)
+            make_pie6(ax, cv, mats6, [cmap6[m] for m in mats6], "Circularity (Waste-Wtd)")
+            plt.tight_layout(); st.pyplot(fig, use_container_width=True); plt.close(fig)
+
+        st.markdown("#### Emission Stage Distribution by Material")
+        st.caption("A1–A3: Production · A4: Transport in · A5: Construction · C1: Demolition · C2: Transport out · C3: Processing · C4: Landfill")
+        fig, ax = plt.subplots(figsize=(10, 3.8))
+        bottoms = [0.0]*len(mats6)
+        for sk, sl, sc in zip(["A1A3","A4","A5","C1","C2","C3","C4"],
+                               ["A1–A3","A4","A5","C1","C2","C3","C4"],
+                               ["#1d4ed8","#3b82f6","#93c5fd","#dc2626","#f87171","#16a34a","#4ade80"]):
+            vals = [er[m].get(sk,0) for m in mats6]
+            ax.bar(mats6, vals, bottom=bottoms, label=sl, color=sc, width=0.52)
+            bottoms = [b+v for b,v in zip(bottoms,vals)]
+        ax.set_ylabel("kg CO₂e", fontsize=9)
+        ax.set_title("Lifecycle Emission Stages by Material", fontsize=11, fontweight="bold")
+        ax.legend(loc="upper right", fontsize=8, frameon=False, ncol=4)
+        plt.xticks(rotation=22, ha="right", fontsize=8)
+        plt.tight_layout(); st.pyplot(fig, use_container_width=True); plt.close(fig)
+
     st.divider()
 
     # ── PDF DOWNLOAD ──────────────────────────────────────────────────────
@@ -2405,29 +2424,6 @@ def page_results():
 # ROUTER
 # ══════════════════════════════════════════════════════════════════════════════
 show_progress()
-
-# ── Persistent debug panel (always visible, not cleared) ──────────────────────
-with st.expander("🔧 Data Logging Status", expanded=False):
-    col_s, col_f = st.columns(2)
-    with col_s:
-        st.markdown("**📊 Google Sheets**")
-        if st.session_state.get("_sheets_ok"):
-            st.success(f"✅ Saved at {st.session_state['_sheets_ok']}")
-        elif st.session_state.get("_sheets_error"):
-            st.error(f"❌ Failed:\n```\n{st.session_state['_sheets_error']}\n```")
-        else:
-            st.info("No submission yet this session.")
-    with col_f:
-        st.markdown("**🔥 Firebase / Firestore**")
-        if st.session_state.get("_fire_ok"):
-            st.success(f"✅ Saved at {st.session_state['_fire_ok']}")
-            if st.session_state.get("_fire_doc"):
-                st.caption(f"Doc ID: `{st.session_state['_fire_doc']}`")
-        elif st.session_state.get("_fire_error"):
-            st.error(f"❌ Failed:\n```\n{st.session_state['_fire_error']}\n```")
-        else:
-            st.info("No submission yet this session.")
-
 page = st.session_state.page
 
 if page == 1:   page_project_info()
