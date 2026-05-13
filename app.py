@@ -1025,209 +1025,329 @@ def find_nearest_plants(user_location_str, n=5):
     return [{**p, "Distance_km": None} for p in RECYCLING_PLANTS[:n]]
 
 
-def _pdf_pie(vals, labels, colors_list, title, size=(3.2, 3.8)):
+def _pdf_pie(vals, labels, colors_list, title):
+    """Render a pie chart to a ReportLab Image, sized from the actual saved PNG."""
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt, io
     from PIL import Image as PILImage
     from reportlab.platypus import Image as RLImg
-    fig, ax = plt.subplots(figsize=size)
-    _, _, autotexts = ax.pie(vals, labels=None, colors=colors_list,
-        startangle=140, autopct="%1.0f%%", pctdistance=0.78,
-        wedgeprops=dict(linewidth=0.4, edgecolor="white"))
-    for at in autotexts: at.set_fontsize(6.5)
-    ax.set_title(title, fontsize=8.5, fontweight="bold", pad=6)
-    ax.legend(labels, loc="lower center", bbox_to_anchor=(0.5,-0.18),
-              ncol=2, fontsize=5.5, frameon=False)
-    fig.subplots_adjust(bottom=0.18)
-    buf2 = io.BytesIO(); fig.savefig(buf2, format="png", dpi=150, bbox_inches="tight"); plt.close(fig)
-    buf2.seek(0)
-    img = PILImage.open(buf2); w_px, h_px = img.size; buf2.seek(0)
-    aspect = h_px / w_px
-    rl_w = size[0] * 72
-    return RLImg(buf2, width=rl_w, height=rl_w * aspect)
 
-def _pdf_bar(mats_list, er_dict, size=(6.2, 3.0)):
+    fig, ax = plt.subplots(figsize=(3.4, 3.4))
+    _, _, autotexts = ax.pie(
+        vals, labels=None, colors=colors_list,
+        startangle=140, autopct="%1.0f%%", pctdistance=0.78,
+        wedgeprops=dict(linewidth=0.5, edgecolor="white"))
+    for at in autotexts:
+        at.set_fontsize(7); at.set_fontfamily("serif")
+    ax.set_title(title, fontsize=9, fontweight="bold", pad=7,
+                 fontfamily="serif")
+    ax.legend(labels, loc="lower center", bbox_to_anchor=(0.5, -0.22),
+              ncol=2, fontsize=6, frameon=False, prop={"family": "serif"})
+    fig.subplots_adjust(bottom=0.20, top=0.88)
+
+    buf2 = io.BytesIO()
+    fig.savefig(buf2, format="png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    buf2.seek(0)
+
+    # Measure actual pixel dimensions so RLImg never clips
+    pil = PILImage.open(buf2); w_px, h_px = pil.size; buf2.seek(0)
+    target_w = 3.4 * 72   # points (~5.8 cm)
+    target_h = target_w * h_px / w_px
+    return RLImg(buf2, width=target_w, height=target_h)
+
+
+def _pdf_bar(mats_list, er_dict):
+    """Render the stacked emission bar chart, sized from the actual PNG."""
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt, io
     from PIL import Image as PILImage
     from reportlab.platypus import Image as RLImg
+
     stages  = ["A1A3","A4","A5","C1","C2","C3","C4"]
     slabels = ["A1-A3","A4","A5","C1","C2","C3","C4"]
     scols   = ["#1d4ed8","#3b82f6","#93c5fd","#dc2626","#f87171","#16a34a","#4ade80"]
-    fig, ax = plt.subplots(figsize=size)
-    bottoms = [0.0]*len(mats_list)
+
+    fig, ax = plt.subplots(figsize=(6.8, 3.2))
+    bottoms = [0.0] * len(mats_list)
     for sk, sl, sc in zip(stages, slabels, scols):
         vals = [er_dict[m].get(sk, 0) for m in mats_list]
-        ax.bar(mats_list, vals, bottom=bottoms, label=sl, color=sc, width=0.5)
-        bottoms = [b+v for b,v in zip(bottoms, vals)]
-    ax.set_ylabel("kg CO\u2082e", fontsize=8)
-    ax.set_title("Emission Stages by Material", fontsize=9, fontweight="bold")
-    ax.legend(loc="upper right", fontsize=7, frameon=False, ncol=4)
-    plt.xticks(rotation=20, ha="right", fontsize=7)
-    fig.subplots_adjust(bottom=0.22)
-    buf2 = io.BytesIO(); fig.savefig(buf2, format="png", dpi=150, bbox_inches="tight"); plt.close(fig)
+        ax.bar(mats_list, vals, bottom=bottoms, label=sl, color=sc, width=0.52)
+        bottoms = [b + v for b, v in zip(bottoms, vals)]
+
+    ax.set_ylabel("kg CO\u2082e", fontsize=8, fontfamily="serif")
+    ax.set_title("Emission Stages by Material", fontsize=9.5,
+                 fontweight="bold", fontfamily="serif")
+    ax.legend(loc="upper right", fontsize=7.5, frameon=False, ncol=4,
+              prop={"family": "serif"})
+    plt.xticks(rotation=22, ha="right", fontsize=7.5,
+               fontfamily="serif")
+    fig.subplots_adjust(bottom=0.24, top=0.90)
+
+    buf2 = io.BytesIO()
+    fig.savefig(buf2, format="png", dpi=160, bbox_inches="tight")
+    plt.close(fig)
     buf2.seek(0)
-    img = PILImage.open(buf2); w_px, h_px = img.size; buf2.seek(0)
-    rl_w = size[0] * 72
-    return RLImg(buf2, width=rl_w, height=rl_w * (h_px / w_px))
+
+    pil = PILImage.open(buf2); w_px, h_px = pil.size; buf2.seek(0)
+    target_w = 6.8 * 72
+    target_h = target_w * h_px / w_px
+    return RLImg(buf2, width=target_w, height=target_h)
+
 
 def generate_pdf_report(project, waste_table, emission_results, circ_scores, circ_aggregate, benefits):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                     Paragraph, Spacer, HRFlowable)
     from reportlab.lib.units import cm
 
-    ACCENT = colors.HexColor("#ef4444")
-    DARK   = colors.HexColor("#1a1a2e")
-    LBG    = colors.HexColor("#f9fafb")
-    PCOLS  = ["#ef4444","#f97316","#eab308","#22c55e","#3b82f6","#8b5cf6","#ec4899","#14b8a6","#6b7280"]
-    mats_p  = [r["material"] for r in waste_table]
+    # ── Palette ──────────────────────────────────────────────────────────────
+    GREEN  = colors.HexColor("#2e7d32")
+    DARK   = colors.HexColor("#1a1a1a")
+    LGREY  = colors.HexColor("#f5f5f5")
+    MGREY  = colors.HexColor("#e0e0e0")
+    PCOLS  = ["#ef4444","#f97316","#eab308","#22c55e","#3b82f6",
+              "#8b5cf6","#ec4899","#14b8a6","#6b7280"]
+
+    mats_p = [r["material"] for r in waste_table]
+    page_w = A4[0] - 2 * 1.8 * cm   # usable width
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4,
-        leftMargin=1.8*cm, rightMargin=1.8*cm, topMargin=1.8*cm, bottomMargin=2*cm)
-    styles = getSampleStyleSheet()
-    body = styles["Normal"]; body.fontSize = 9; body.leading = 13
-    h1 = ParagraphStyle("rh1", parent=styles["Heading1"], fontSize=17, textColor=DARK, spaceAfter=2)
-    h2 = ParagraphStyle("rh2", parent=styles["Heading2"], fontSize=10.5, textColor=DARK,
-                        spaceAfter=4, spaceBefore=8, backColor=LBG, leftIndent=5, borderPad=3)
-    sm = ParagraphStyle("rsm", parent=body, fontSize=7, textColor=colors.HexColor("#6b7280"))
+          leftMargin=1.8*cm, rightMargin=1.8*cm,
+          topMargin=1.8*cm, bottomMargin=2.2*cm)
 
-    def ts(hc):
+    # ── Styles (all Times New Roman / serif) ─────────────────────────────────
+    TNR   = "Times-Roman"
+    TNR_B = "Times-Bold"
+    TNR_I = "Times-Italic"
+
+    styles = getSampleStyleSheet()
+
+    title_sty = ParagraphStyle("rtitle",
+        fontName=TNR_B, fontSize=28, textColor=GREEN,
+        alignment=1,   # centre
+        spaceAfter=2, spaceBefore=0)
+
+    sub_sty = ParagraphStyle("rsub",
+        fontName=TNR_I, fontSize=11, textColor=colors.HexColor("#555555"),
+        alignment=1, spaceAfter=6)
+
+    h2_sty = ParagraphStyle("rh2",
+        fontName=TNR_B, fontSize=11, textColor=DARK,
+        spaceBefore=10, spaceAfter=4,
+        borderPad=4, leftIndent=0)
+
+    body_sty = ParagraphStyle("rbody",
+        fontName=TNR, fontSize=9, leading=13, textColor=DARK)
+
+    sm_sty = ParagraphStyle("rsm",
+        fontName=TNR_I, fontSize=7, leading=10,
+        textColor=colors.HexColor("#777777"))
+
+    # ── Table style factory ───────────────────────────────────────────────────
+    def ts(header_col):
         return TableStyle([
-            ("BACKGROUND",(0,0),(-1,0),hc), ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"), ("FONTSIZE",(0,0),(-1,0),8.5),
-            ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,LBG]),
-            ("GRID",(0,0),(-1,-1),0.35,colors.HexColor("#e5e7eb")),
-            ("FONTSIZE",(0,1),(-1,-1),8), ("ALIGN",(1,0),(-1,-1),"CENTER"),
-            ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-            ("TOPPADDING",(0,0),(-1,-1),4), ("BOTTOMPADDING",(0,0),(-1,-1),4),
-            ("LEFTPADDING",(0,0),(-1,-1),6), ("RIGHTPADDING",(0,0),(-1,-1),6),
+            ("BACKGROUND",  (0, 0), (-1, 0), header_col),
+            ("TEXTCOLOR",   (0, 0), (-1, 0), colors.white),
+            ("FONTNAME",    (0, 0), (-1, 0), TNR_B),
+            ("FONTSIZE",    (0, 0), (-1, 0), 8.5),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LGREY]),
+            ("GRID",        (0, 0), (-1, -1), 0.35, MGREY),
+            ("FONTNAME",    (0, 1), (-1, -1), TNR),
+            ("FONTSIZE",    (0, 1), (-1, -1), 8.5),
+            ("ALIGN",       (1, 0), (-1, -1), "CENTER"),
+            ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING",  (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING",(0,0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 7),
+            ("RIGHTPADDING",(0, 0), (-1, -1), 7),
         ])
 
-    E = []
-    # Header
-    E.append(Paragraph(
-        '<font color="#ef4444"><b>Re</b></font><font color="#1a1a2e"><b>Form</b></font>'
-        ' <font size="10" color="#6b7280">\u2014 C&amp;D Waste Estimation Report</font>', h1))
-    E.append(HRFlowable(width="100%", thickness=1.5, color=ACCENT, spaceAfter=5))
+    # ── Helper: section heading with green left rule ──────────────────────────
+    def section(txt):
+        return [
+            Paragraph(txt, h2_sty),
+            HRFlowable(width="100%", thickness=0.6,
+                       color=colors.HexColor("#cccccc"), spaceAfter=4),
+        ]
 
-    # Project info grid
+    E = []  # story
+
+    # ── TITLE ─────────────────────────────────────────────────────────────────
+    E.append(Spacer(1, 0.2*cm))
+    E.append(Paragraph("ReForm", title_sty))
+    E.append(Paragraph("C&amp;D Waste Estimation Report", sub_sty))
+    E.append(HRFlowable(width="100%", thickness=1.5,
+                        color=GREEN, spaceAfter=8))
+
+    # ── PROJECT INFO ──────────────────────────────────────────────────────────
     inf = [
-        ["Project", project.get("name","\u2014"), "Location", project.get("location","\u2014")],
-        ["Type",    project.get("construction_type","\u2014"), "Building", project.get("building_type","\u2014")],
-        ["Area",    f"{project.get('builtup_area','\u2014')} m\u00b2", "Floors", str(project.get("num_floors","\u2014"))],
+        ["Project",  project.get("name", "—"),
+         "Location", project.get("location", "—")],
+        ["Type",     project.get("construction_type", "—"),
+         "Building", project.get("building_type", "—")],
+        ["Area",     f"{project.get('builtup_area','—')} m²",
+         "Floors",   str(project.get("num_floors", "—"))],
     ]
-    it = Table(inf, colWidths=[2*cm,5.9*cm,2*cm,5.9*cm])
+    it = Table(inf, colWidths=[2.0*cm, 5.8*cm, 2.0*cm, 5.8*cm])
     it.setStyle(TableStyle([
-        ("FONTNAME",(0,0),(0,-1),"Helvetica-Bold"), ("FONTNAME",(2,0),(2,-1),"Helvetica-Bold"),
-        ("FONTSIZE",(0,0),(-1,-1),8.5), ("BACKGROUND",(0,0),(-1,-1),LBG),
-        ("GRID",(0,0),(-1,-1),0.3,colors.HexColor("#e5e7eb")),
-        ("TOPPADDING",(0,0),(-1,-1),5), ("BOTTOMPADDING",(0,0),(-1,-1),5),
-        ("LEFTPADDING",(0,0),(-1,-1),7),
+        ("FONTNAME",    (0, 0), (0, -1), TNR_B),
+        ("FONTNAME",    (2, 0), (2, -1), TNR_B),
+        ("FONTNAME",    (1, 0), (1, -1), TNR),
+        ("FONTNAME",    (3, 0), (3, -1), TNR),
+        ("FONTSIZE",    (0, 0), (-1, -1), 9),
+        ("BACKGROUND",  (0, 0), (-1, -1), LGREY),
+        ("GRID",        (0, 0), (-1, -1), 0.3, MGREY),
+        ("TOPPADDING",  (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING",(0,0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
     ]))
-    E.append(it); E.append(Spacer(1,0.4*cm))
+    E.append(it); E.append(Spacer(1, 0.4*cm))
 
-    # KPI bar
+    # ── KPI SUMMARY BAR ───────────────────────────────────────────────────────
     tw = sum(r["waste_tonnes"] for r in waste_table)
-    tg = sum(r["total_gwp"] for r in emission_results.values())/1000
-    ta = sum(b["avoided_emission_kgco2e"] for b in benefits.values())/1000
+    tg = sum(r["total_gwp"] for r in emission_results.values()) / 1000
+    ta = sum(b["avoided_emission_kgco2e"] for b in benefits.values()) / 1000
     tv = sum(b["virgin_material_savings_inr"] for b in benefits.values())
+
     kpi = Table([[
-        f"{tw:.2f} t\nWaste",
-        f"{tg:.2f} tCO2e\nGWP",
+        f"{tw:.2f} t\nTotal Waste",
+        f"{tg:.2f} tCO\u2082e\nGWP",
         f"{circ_aggregate*100:.1f}/100\nCircularity",
-        f"{ta:.2f} tCO2e\nAvoided",
+        f"{ta:.2f} tCO\u2082e\nAvoided",
         f"\u20b9{tv:,.0f}\nVirgin Savings",
-    ]], colWidths=[3.2*cm]*5)
+    ]], colWidths=[page_w / 5] * 5)
     kpi.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,-1),DARK), ("TEXTCOLOR",(0,0),(-1,-1),colors.white),
-        ("FONTSIZE",(0,0),(-1,-1),7.5), ("ALIGN",(0,0),(-1,-1),"CENTER"),
-        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-        ("TOPPADDING",(0,0),(-1,-1),8), ("BOTTOMPADDING",(0,0),(-1,-1),8),
-        ("LINEAFTER",(0,0),(-2,-1),0.5,colors.HexColor("#374151")),
+        ("BACKGROUND",  (0, 0), (-1, -1), colors.HexColor("#1a1a1a")),
+        ("TEXTCOLOR",   (0, 0), (-1, -1), colors.white),
+        ("FONTNAME",    (0, 0), (-1, -1), TNR_B),
+        ("FONTSIZE",    (0, 0), (-1, -1), 8),
+        ("ALIGN",       (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",      (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",  (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING",(0,0), (-1, -1), 9),
+        ("LINEAFTER",   (0, 0), (-2, -1), 0.5, colors.HexColor("#444444")),
     ]))
-    E.append(kpi); E.append(Spacer(1,0.5*cm))
+    E.append(kpi); E.append(Spacer(1, 0.55*cm))
 
-    # Waste
-    E.append(Paragraph("1 \u2014 Waste Estimation", h2))
-    wd = [["Material","Waste (t)","% Total"]]
+    # ── SECTION 1 — WASTE ─────────────────────────────────────────────────────
+    E += section("1 — Waste Estimation")
+    wd = [["Material", "Waste (t)", "% of Total"]]
     for r in waste_table:
-        wd.append([r["material"], f"{r['waste_tonnes']:.2f}", f"{r['waste_tonnes']/tw*100:.1f}%"])
-    wt2 = Table(wd, colWidths=[9*cm,3.5*cm,3.5*cm])
-    wt2.setStyle(ts(colors.HexColor("#065f46")))
-    E.append(wt2); E.append(Paragraph(f"<i>{WASTE_RATE_SOURCE}</i>", sm)); E.append(Spacer(1,0.4*cm))
+        wd.append([r["material"],
+                   f"{r['waste_tonnes']:.2f}",
+                   f"{r['waste_tonnes']/tw*100:.1f}%"])
+    wt2 = Table(wd, colWidths=[9*cm, 3.5*cm, 3.5*cm])
+    wt2.setStyle(ts(colors.HexColor("#1b5e20")))
+    E.append(wt2)
+    E.append(Paragraph(WASTE_RATE_SOURCE, sm_sty))
+    E.append(Spacer(1, 0.45*cm))
 
-    # Emissions
+    # ── SECTION 2 — ENVIRONMENTAL IMPACT ─────────────────────────────────────
     if emission_results:
-        E.append(Paragraph("2 \u2014 Environmental Impact", h2))
-        ed = [["Material","A1-A3\n(kgCO2e)","Transport\n(kgCO2e)","EOL\n(kgCO2e)","Total GWP\n(kgCO2e)","AP\n(kgSO2e)","EP\n(kgPO4e)"]]
+        E += section("2 — Environmental Impact")
+        ed = [["Material", "A1–A3\n(kg CO₂e)", "Transport\n(kg CO₂e)",
+               "EOL\n(kg CO₂e)", "Total GWP\n(kg CO₂e)",
+               "AP\n(kg SO₂e)", "EP\n(kg PO₄e)"]]
         for m, r in emission_results.items():
-            ed.append([m, f"{r['A1A3']:.1f}", f"{r['A4']+r['C1']+r['C2']:.1f}",
-                       f"{r['C3']+r['C4']:.1f}", f"{r['total_gwp']:.1f}", f"{r['AP']:.2f}", f"{r['EP']:.3f}"])
-        et = Table(ed, colWidths=[3.5*cm,2.2*cm,2.5*cm,2.2*cm,2.4*cm,2.2*cm,2*cm])
-        et.setStyle(ts(colors.HexColor("#1d4ed8")))
-        E.append(et); E.append(Paragraph(f"<i>{GWP_SOURCE}</i>", sm)); E.append(Spacer(1,0.4*cm))
+            ed.append([m,
+                       f"{r['A1A3']:.1f}",
+                       f"{r['A4']+r['C1']+r['C2']:.1f}",
+                       f"{r['C3']+r['C4']:.1f}",
+                       f"{r['total_gwp']:.1f}",
+                       f"{r['AP']:.2f}",
+                       f"{r['EP']:.3f}"])
+        et = Table(ed, colWidths=[3.5*cm,2.2*cm,2.5*cm,2.2*cm,2.4*cm,2.2*cm,2.0*cm])
+        et.setStyle(ts(colors.HexColor("#0d47a1")))
+        E.append(et)
+        E.append(Paragraph(GWP_SOURCE, sm_sty))
+        E.append(Spacer(1, 0.45*cm))
 
-    # Circularity
-    E.append(Paragraph(f"3 \u2014 Circularity  |  Score: <b>{circ_aggregate*100:.1f}/100</b>", h2))
-    cd = [["Material","Reuse%","Recycle%","Landfill%","Score/100"]]
+    # ── SECTION 3 — CIRCULARITY ───────────────────────────────────────────────
+    E += section(f"3 — Circularity  |  Aggregate Score: {circ_aggregate*100:.1f} / 100")
+    cd = [["Material", "Reuse %", "Recycle %", "Landfill %", "MCI Score / 100"]]
     for m, sc in circ_scores.items():
-        eol = emission_results.get(m,{}).get("eol",{})
-        cd.append([m, f"{eol.get('Reuse',0)}", f"{eol.get('Recycle',0)}", f"{eol.get('Landfill',0)}", f"{sc*100:.1f}"])
-    ct = Table(cd, colWidths=[6*cm,2.5*cm,2.5*cm,2.5*cm,2.5*cm])
-    ct.setStyle(ts(colors.HexColor("#065f46")))
-    E.append(ct); E.append(Spacer(1,0.4*cm))
+        eol = emission_results.get(m, {}).get("eol", {})
+        cd.append([m,
+                   f"{eol.get('Reuse',0)}",
+                   f"{eol.get('Recycle',0)}",
+                   f"{eol.get('Landfill',0)}",
+                   f"{sc*100:.1f}"])
+    ct = Table(cd, colWidths=[6*cm, 2.5*cm, 2.5*cm, 2.5*cm, 2.5*cm])
+    ct.setStyle(ts(colors.HexColor("#1b5e20")))
+    E.append(ct); E.append(Spacer(1, 0.45*cm))
 
-    # Benefits
+    # ── SECTION 4 — ECONOMIC BENEFITS ────────────────────────────────────────
     if benefits:
-        E.append(Paragraph("4 \u2014 Economic & Environmental Benefits", h2))
+        E += section("4 — Economic & Environmental Benefits")
         td2 = sum(b["landfill_diverted_t"] for b in benefits.values())
         tls = sum(b["landfill_cost_saved_inr"] for b in benefits.values())
-        bd  = [["Metric","Value"],
-               ["Avoided Emissions", f"{ta:.2f} t CO2e"],
-               ["Virgin Material Savings", f"\u20b9{tv:,.0f}"],
-               ["Landfill Diverted", f"{td2:.2f} t"],
-               ["Landfill Cost Saved", f"\u20b9{tls:,.0f}"]]
-        bt = Table(bd, colWidths=[9*cm,7*cm])
-        bt.setStyle(ts(colors.HexColor("#92400e")))
-        E.append(bt); E.append(Spacer(1,0.4*cm))
+        bd = [
+            ["Metric", "Value"],
+            ["Avoided Emissions",      f"{ta:.2f} t CO\u2082e"],
+            ["Virgin Material Savings", f"\u20b9{tv:,.0f}"],
+            ["Landfill Diverted",       f"{td2:.2f} t"],
+            ["Landfill Cost Saved",     f"\u20b9{tls:,.0f}"],
+        ]
+        bt = Table(bd, colWidths=[9*cm, 7*cm])
+        bt.setStyle(ts(colors.HexColor("#b45309")))
+        E.append(bt); E.append(Spacer(1, 0.45*cm))
 
-    # Charts
-    E.append(Paragraph("5 \u2014 Analytics", h2))
+    # ── SECTION 5 — ANALYTICS (charts) ───────────────────────────────────────
+    E += section("5 — Analytics")
+
     mats_er = [m for m in mats_p if m in emission_results]
-    pclr_er = [PCOLS[i%len(PCOLS)] for i in range(len(mats_er))]
+    pclr_er = [PCOLS[i % len(PCOLS)] for i in range(len(mats_er))]
     gwp_v  = [emission_results[m]["total_gwp"] for m in mats_er]
     wst_v  = [r["waste_tonnes"] for r in waste_table if r["material"] in mats_er]
     wst_l  = [r["material"]     for r in waste_table if r["material"] in mats_er]
-    crc_v  = [circ_scores.get(m,0)*emission_results[m]["qty_t"] for m in mats_er]
-    if sum(crc_v)==0: crc_v=[1]*len(mats_er)
+    crc_v  = [circ_scores.get(m, 0) * emission_results[m]["qty_t"] for m in mats_er]
+    if sum(crc_v) == 0:
+        crc_v = [1] * len(mats_er)
+
+    pie_w = [PCOLS[i % len(PCOLS)] for i in range(len(wst_l))]
+
+    # Three pie charts in a row; each returns an RLImg sized from actual pixels
     pie_row = Table([[
-        _pdf_pie(wst_v, wst_l, [PCOLS[i%len(PCOLS)] for i in range(len(wst_l))], "Waste"),
+        _pdf_pie(wst_v, wst_l, pie_w,  "Waste"),
         _pdf_pie(gwp_v, mats_er, pclr_er, "GWP"),
         _pdf_pie(crc_v, mats_er, pclr_er, "Circularity"),
-    ]], colWidths=[5.6*cm,5.6*cm,5.6*cm])
-    pie_row.setStyle(TableStyle([("ALIGN",(0,0),(-1,-1),"CENTER"),("VALIGN",(0,0),(-1,-1),"MIDDLE")]))
-    E.append(pie_row); E.append(Spacer(1,0.3*cm))
-    E.append(_pdf_bar(mats_er, emission_results)); E.append(Spacer(1,0.5*cm))
+    ]], colWidths=[page_w / 3] * 3)
+    pie_row.setStyle(TableStyle([
+        ("ALIGN",  (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    E.append(pie_row)
+    E.append(Spacer(1, 0.4*cm))
 
-    # Sources
-    E.append(Paragraph("Data Sources", h2))
-    sample_lf = list(benefits.values())[0].get("landfill_cost_per_tonne", DEFAULT_LANDFILL_COST) if benefits else DEFAULT_LANDFILL_COST
-    for i, s in enumerate([
+    # Bar chart — also pixel-measured
+    E.append(_pdf_bar(mats_er, emission_results))
+    E.append(Spacer(1, 0.6*cm))
+
+    # ── DATA SOURCES ─────────────────────────────────────────────────────────
+    E += section("Data Sources")
+    sample_lf = (list(benefits.values())[0].get("landfill_cost_per_tonne",
+                 DEFAULT_LANDFILL_COST) if benefits else DEFAULT_LANDFILL_COST)
+    srcs = [
         "CSE (2020). 'Another Brick off the Wall'. CSE, New Delhi. Table 4, p.30.",
         "IFC/thinkstep (2017). EDGE India Construction Materials Database.",
-        GWP_SOURCE, f"AP: {AP_SOURCE}", f"EFW: {EFW_SOURCE}",
+        GWP_SOURCE,
+        f"AP: {AP_SOURCE}",
+        f"EFW: {EFW_SOURCE}",
         "IPCC (2006). Guidelines for National GHG Inventories, Vol. 2.",
-        "Jang et al. (2022). Materials 15, 5047. DOI: 10.3390/ma15145047",
-        "CEA (2024). CO2 Baseline Database for the Indian Power Sector v18.",
-        f"Landfill: \u20b9{sample_lf}/tonne. {LANDFILL_COST_SOURCE}",
-        VIRGIN_PRICE_SOURCE, PLANTS_SOURCE,
+        "Jang et al. (2022). Materials 15, 5047. DOI: 10.3390/ma15145047.",
+        "CEA (2024). CO\u2082 Baseline Database for the Indian Power Sector v18.",
+        f"Landfill tipping fee: \u20b9{sample_lf}/tonne. {LANDFILL_COST_SOURCE}",
+        VIRGIN_PRICE_SOURCE,
+        PLANTS_SOURCE,
         "MoEFCC (2016). C&D Waste Management Rules.",
-        "EMF (2015). Material Circularity Indicator.",
-    ], 1):
-        E.append(Paragraph(f"{i}. {s}", sm))
+        "EMF (2015). Material Circularity Indicator (MCI) Technical Appendix.",
+    ]
+    for i, s in enumerate(srcs, 1):
+        E.append(Paragraph(f"{i}.  {s}", sm_sty))
 
     doc.build(E)
     buf.seek(0)
