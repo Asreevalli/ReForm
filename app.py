@@ -159,8 +159,7 @@ def log_to_sheets(proj, emission_results, circ_aggregate, benefits):
                    "https://www.googleapis.com/auth/drive"]
         sa_info = {k: v for k, v in st.secrets["gcp_service_account"].items()}
         creds   = Credentials.from_service_account_info(sa_info, scopes=scopes)
-        client  = gspread.Client(auth=creds)
-        client.session = gspread.auth.AuthorizedSession(creds)
+        client  = gspread.authorize(creds)
         sheet   = client.open(st.secrets["sheets"]["spreadsheet_name"]).sheet1
 
         # Auto-create header row if sheet is empty
@@ -209,7 +208,7 @@ def _get_firestore_client():
 
 def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
                      circ_scores, circ_aggregate, benefits):
-    """Store full formatted report in Firestore collection 'submissions'."""
+    """Store full structured data + formatted report in Firestore collection 'submissions'."""
     try:
         db = _get_firestore_client()
 
@@ -221,11 +220,98 @@ def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
         safe_name = proj.get("name","unknown").replace(" ","_")[:30]
         doc_id    = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_name
 
+        # ── Compute summary totals ───────────────────────────────────────────
+        total_waste   = round(sum(r["qty_t"]     for r in emission_results.values()), 3)
+        total_gwp     = round(sum(r["total_gwp"] for r in emission_results.values()) / 1000.0, 4)
+        total_ap      = round(sum(r["AP"]        for r in emission_results.values()), 4)
+        total_ep      = round(sum(r["EP"]        for r in emission_results.values()), 6)
+        total_avoided = round(sum(b.get("avoided_emission_kgco2e",0)    for b in benefits.values()) / 1000.0, 4)
+        total_vsav    = round(sum(b.get("virgin_material_savings_inr",0) for b in benefits.values()), 0)
+        total_lfdiv   = round(sum(b.get("landfill_diverted_t",0)         for b in benefits.values()), 3)
+        total_lfsav   = round(sum(b.get("landfill_cost_saved_inr",0)     for b in benefits.values()), 0)
+
+        # ── Serialise per-material results to plain dicts ────────────────────
+        emission_results_serial = {
+            mat: {
+                "A1A3": round(r.get("A1A3", 0), 2),
+                "A4":   round(r.get("A4",   0), 2),
+                "A5":   round(r.get("A5",   0), 2),
+                "C1":   round(r.get("C1",   0), 2),
+                "C2":   round(r.get("C2",   0), 2),
+                "C3":   round(r.get("C3",   0), 2),
+                "C4":   round(r.get("C4",   0), 2),
+                "AP":   round(r.get("AP",   0), 4),
+                "EP":   round(r.get("EP",   0), 6),
+                "total_gwp": round(r.get("total_gwp", 0), 2),
+                "qty_t":     round(r.get("qty_t", 0), 3),
+                "eol":       r.get("eol", {}),
+            }
+            for mat, r in emission_results.items()
+        }
+
+        benefits_serial = {
+            mat: {
+                "recycled_t":                  round(b.get("recycled_t", 0), 3),
+                "reused_t":                    round(b.get("reused_t", 0), 3),
+                "landfill_t":                  round(b.get("landfill_t", 0), 3),
+                "landfill_diverted_t":         round(b.get("landfill_diverted_t", 0), 3),
+                "avoided_emission_kgco2e":     round(b.get("avoided_emission_kgco2e", 0), 3),
+                "virgin_material_savings_inr": round(b.get("virgin_material_savings_inr", 0), 0),
+                "landfill_cost_saved_inr":     round(b.get("landfill_cost_saved_inr", 0), 0),
+                "landfill_cost_actual_inr":    round(b.get("landfill_cost_actual_inr", 0), 0),
+                "landfill_cost_per_tonne":     b.get("landfill_cost_per_tonne", 0),
+            }
+            for mat, b in benefits.items()
+        }
+
+        circ_scores_serial = {mat: round(sc * 100, 2) for mat, sc in circ_scores.items()}
+
+        transport_serial = {
+            mat: {
+                "vehicle":      ei.get("vehicle", ""),
+                "distance_km":  ei.get("distance_km", 0),
+                "distance_km_c2": ei.get("distance_km_c2", 0),
+                "sub_type":     ei.get("sub_type", ""),
+            }
+            for mat, ei in emission_inputs.items()
+        }
+
         db.collection("submissions").document(doc_id).set({
-            "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "project_name": proj.get("name",""),
-            "city":         proj.get("location",""),
-            "report":       report_str,
+            # ── Identity & timestamps ────────────────────────────────────────
+            "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "project_name":      proj.get("name", ""),
+            "city":              proj.get("location", ""),
+            # ── INPUTS: project metadata ────────────────────────────────────
+            "inputs": {
+                "project_type":    proj.get("construction_type", ""),
+                "building_type":   proj.get("building_type", ""),
+                "builtup_area_m2": proj.get("builtup_area", ""),
+                "plot_area_m2":    proj.get("plot_area", ""),
+                "num_floors":      proj.get("num_floors", ""),
+                "input_method":    proj.get("input_method", ""),
+                "locality":        proj.get("locality", ""),
+                "waste_table":     waste_table,
+                "transport_inputs": transport_serial,
+            },
+            # ── OUTPUTS: computed results ────────────────────────────────────
+            "outputs": {
+                "summary": {
+                    "total_waste_t":          total_waste,
+                    "total_gwp_tco2e":        total_gwp,
+                    "total_ap_kg_so2e":       total_ap,
+                    "total_ep_kg_po4e":       total_ep,
+                    "circularity_score":      round(circ_aggregate * 100, 1),
+                    "avoided_emissions_tco2e": total_avoided,
+                    "virgin_mat_savings_inr": total_vsav,
+                    "landfill_diverted_t":    total_lfdiv,
+                    "landfill_cost_saved_inr": total_lfsav,
+                },
+                "per_material_emissions": emission_results_serial,
+                "per_material_circularity": circ_scores_serial,
+                "per_material_benefits":    benefits_serial,
+            },
+            # ── Human-readable full report ───────────────────────────────────
+            "report": report_str,
         })
     except Exception:
         pass  # silent — never interrupt the user
@@ -743,43 +829,13 @@ def go(page): st.session_state.page = page
 # ══════════════════════════════════════════════════════════════════════════════
 STEPS = ["Project Info", "Data Input", "Waste Estimation", "Emissions & EOL", "Results & Report"]
 
-REFORM_LOGO = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 56">
-  <rect x="2" y="28" width="72" height="20" rx="3" fill="#1a1a2e"/>
-  <rect x="4" y="20" width="32" height="12" rx="2" fill="#1a1a2e"/>
-  <rect x="6" y="22" width="14" height="8" rx="1" fill="#93c5fd"/>
-  <g transform="rotate(-20,55,28)">
-    <rect x="36" y="14" width="34" height="15" rx="2" fill="#ef4444"/>
-  </g>
-  <circle cx="78" cy="26" r="3" fill="#92400e" opacity=".9"/>
-  <circle cx="85" cy="20" r="2.5" fill="#78716c" opacity=".85"/>
-  <rect x="82" y="29" width="5" height="5" rx="1" fill="#92400e" opacity=".75"/>
-  <circle cx="91" cy="33" r="2" fill="#6b7280" opacity=".8"/>
-  <text x="97" y="27" font-size="13" fill="#10b981" font-family="sans-serif" font-weight="bold">→</text>
-  <rect x="112" y="18" width="18" height="22" rx="1" fill="#10b981" opacity=".9"/>
-  <rect x="115" y="22" width="5" height="6" rx=".5" fill="white" opacity=".7"/>
-  <rect x="122" y="22" width="5" height="6" rx=".5" fill="white" opacity=".7"/>
-  <rect x="115" y="30" width="12" height="10" rx=".5" fill="#065f46"/>
-  <line x1="112" y1="18" x2="112" y2="12" stroke="#fbbf24" stroke-width="1.2"/>
-  <line x1="130" y1="18" x2="130" y2="12" stroke="#fbbf24" stroke-width="1.2"/>
-  <line x1="110" y1="12" x2="132" y2="12" stroke="#fbbf24" stroke-width="1.2"/>
-  <circle cx="20" cy="49" r="7" fill="#374151"/>
-  <circle cx="20" cy="49" r="3.5" fill="#6b7280"/>
-  <circle cx="58" cy="49" r="7" fill="#374151"/>
-  <circle cx="58" cy="49" r="3.5" fill="#6b7280"/>
-</svg>'''
-
 def show_progress():
-    hcol1, hcol2 = st.columns([1, 7])
-    with hcol1:
-        st.markdown(REFORM_LOGO, unsafe_allow_html=True)
-    with hcol2:
-        st.markdown(
-            '<div style="padding-top:6px">'
-            '<span style="font-family:DM Serif Display,serif;font-size:1.7rem;font-weight:700;color:#ef4444">Re</span>'
-            '<span style="font-family:DM Serif Display,serif;font-size:1.7rem;font-weight:700;color:#1a1a2e">Form</span>'
-            '<span style="font-family:DM Sans,sans-serif;font-size:0.82rem;color:#6b7280;margin-left:10px;">'
-            'C&amp;D Waste Estimation Tool</span></div>',
-            unsafe_allow_html=True)
+    st.markdown(
+        '<div style="padding-bottom:4px">'
+        '<span style="font-family:DM Sans,sans-serif;font-size:1.7rem;font-weight:700;color:#10b981">ReForm</span>'
+        '<span style="font-family:DM Sans,sans-serif;font-size:0.82rem;color:#6b7280;margin-left:10px;">'
+        'C&amp;D Waste Estimation Tool</span></div>',
+        unsafe_allow_html=True)
     st.markdown("<div style='margin-top:6px'></div>", unsafe_allow_html=True)
     cols = st.columns(len(STEPS))
     for i, (col, label) in enumerate(zip(cols, STEPS)):
@@ -1295,37 +1351,6 @@ def generate_pdf_report(project, waste_table, emission_results, circ_scores, cir
         bt = Table(bd, colWidths=[9*cm, 7*cm])
         bt.setStyle(ts(colors.HexColor("#b45309")))
         E.append(bt); E.append(Spacer(1, 0.45*cm))
-
-    # ── SECTION 5 — ANALYTICS (charts) ───────────────────────────────────────
-    E += section("5 — Analytics")
-
-    mats_er = [m for m in mats_p if m in emission_results]
-    pclr_er = [PCOLS[i % len(PCOLS)] for i in range(len(mats_er))]
-    gwp_v  = [emission_results[m]["total_gwp"] for m in mats_er]
-    wst_v  = [r["waste_tonnes"] for r in waste_table if r["material"] in mats_er]
-    wst_l  = [r["material"]     for r in waste_table if r["material"] in mats_er]
-    crc_v  = [circ_scores.get(m, 0) * emission_results[m]["qty_t"] for m in mats_er]
-    if sum(crc_v) == 0:
-        crc_v = [1] * len(mats_er)
-
-    pie_w = [PCOLS[i % len(PCOLS)] for i in range(len(wst_l))]
-
-    # Three pie charts in a row; each returns an RLImg sized from actual pixels
-    pie_row = Table([[
-        _pdf_pie(wst_v, wst_l, pie_w,  "Waste"),
-        _pdf_pie(gwp_v, mats_er, pclr_er, "GWP"),
-        _pdf_pie(crc_v, mats_er, pclr_er, "Circularity"),
-    ]], colWidths=[page_w / 3] * 3)
-    pie_row.setStyle(TableStyle([
-        ("ALIGN",  (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-    ]))
-    E.append(pie_row)
-    E.append(Spacer(1, 0.4*cm))
-
-    # Bar chart — also pixel-measured
-    E.append(_pdf_bar(mats_er, emission_results))
-    E.append(Spacer(1, 0.6*cm))
 
     # ── DATA SOURCES ─────────────────────────────────────────────────────────
     E += section("Data Sources")
