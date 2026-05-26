@@ -2631,11 +2631,19 @@ def page_results():
         cmap6  = {m: PCOLS6[i % len(PCOLS6)] for i, m in enumerate(mats6)}
 
         def make_pie6(ax, vals, labels, colors, title):
-            ax.pie(vals, labels=None, colors=colors, startangle=140,
+            # Filter out non-positive values (e.g. negative biogenic GWP for timber)
+            filtered = [(v, l, c) for v, l, c in zip(vals, labels, colors) if v > 0]
+            if not filtered:
+                ax.text(0.5, 0.5, "No positive\nvalues", ha="center", va="center",
+                        transform=ax.transAxes, fontsize=9, color="#9ca3af")
+                ax.set_title(title, fontsize=10, fontweight="bold", pad=8)
+                return
+            fv, fl, fc = zip(*filtered)
+            ax.pie(fv, labels=None, colors=fc, startangle=140,
                    autopct="%1.1f%%", pctdistance=0.78,
                    wedgeprops=dict(linewidth=0.5, edgecolor="white"))
             ax.set_title(title, fontsize=10, fontweight="bold", pad=8)
-            patches = [mpatches.Patch(color=c, label=l) for c,l in zip(colors, labels)]
+            patches = [mpatches.Patch(color=c, label=l) for c,l in zip(fc, fl)]
             ax.legend(handles=patches, loc="lower center", bbox_to_anchor=(0.5,-0.28), ncol=2, fontsize=6.5, frameon=False)
 
         st.markdown("#### Material Contribution")
