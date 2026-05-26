@@ -2435,11 +2435,29 @@ def page_results():
     # ── TAB 1: WASTE ──────────────────────────────────────────────────────
     with tab1:
         st.markdown('<p class="section-head">Material Waste Estimation</p>', unsafe_allow_html=True)
-        df_w = pd.DataFrame([{"Material": r["material"], "Waste (tonnes)": round(r["waste_tonnes"],3)} for r in wt])
-        st.dataframe(df_w, use_container_width=True, hide_index=True)
-        st.markdown(f'<div class="source-note">Source: {WASTE_RATE_SOURCE} | Composition: {COMP_SOURCE}</div>', unsafe_allow_html=True)
 
-        # Chart
+        # Group sub-material rows by category so M20+M40+M40(GGBS) sum as one "Concrete" row
+        from collections import defaultdict
+        cat_totals = defaultdict(float)
+        cat_subs   = defaultdict(list)
+        for r in wt:
+            cat  = r.get("category", r["material"])
+            tons = round(r["waste_tonnes"], 3)
+            cat_totals[cat] += tons
+            if r["material"] != cat:
+                cat_subs[cat].append((r["material"], tons))
+
+        display_rows = [{"Material": cat, "Waste (tonnes)": round(cat_totals[cat], 3)} for cat in cat_totals]
+        df_w = pd.DataFrame(display_rows)
+        st.dataframe(df_w, use_container_width=True, hide_index=True)
+
+        for cat, subs in cat_subs.items():
+            if subs:
+                with st.expander(f"\u21b3 {cat} — breakdown by type"):
+                    st.dataframe(pd.DataFrame([{"Sub-material": lbl, "Waste (tonnes)": t} for lbl, t in subs]),
+                                 use_container_width=True, hide_index=True)
+
+        st.markdown(f'<div class="source-note">Source: {WASTE_RATE_SOURCE} | Composition: {COMP_SOURCE}</div>', unsafe_allow_html=True)
         st.bar_chart(df_w.set_index("Material")["Waste (tonnes)"])
 
     # ── TAB 2: EMISSIONS ──────────────────────────────────────────────────
