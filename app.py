@@ -743,6 +743,23 @@ MATERIAL_GWP_A1A3 = {
     "Others":           {"Generic": 50.0},
 }
 
+# ── Sub-materials per category (mirrors keys in MATERIAL_GWP_A1A3) ───────────
+# Used only in the input UI (Page 3, material-quantities method) so users can
+# enter M20, M35, AAC Block etc. as separate rows under one category.
+# The LCA engine (compute_emissions) already uses "sub_type" from emission_inputs;
+# these lists simply drive the UI pickers — no other code is touched.
+MATERIAL_SUBCATEGORIES = {
+    "Concrete":         list(MATERIAL_GWP_A1A3["Concrete"].keys()),
+    "Brick/Masonry":    list(MATERIAL_GWP_A1A3["Brick/Masonry"].keys()),
+    "Steel/Metal":      list(MATERIAL_GWP_A1A3["Steel/Metal"].keys()),
+    "Wood/Timber":      list(MATERIAL_GWP_A1A3["Wood/Timber"].keys()),
+    "Glass":            list(MATERIAL_GWP_A1A3["Glass"].keys()),
+    "Plastic":          list(MATERIAL_GWP_A1A3["Plastic"].keys()),
+    "Bitumen":          list(MATERIAL_GWP_A1A3["Bitumen"].keys()),
+    "Soil/Sand/Gravel": list(MATERIAL_GWP_A1A3["Soil/Sand/Gravel"].keys()),
+    "Others":           list(MATERIAL_GWP_A1A3["Others"].keys()),
+}
+
 # A4 Transport (kg CO2e per tonne-km) — IPCC (2006) GHG Inventories Vol.2 [S7]
 TRANSPORT_EF = {
     "Diesel Truck (< 3.5 t)":   0.30,
@@ -978,21 +995,32 @@ def compute_waste_from_area(project_type, building_type, area_m2):
 
 
 def compute_emissions(waste_table, emission_inputs):
-    """Returns nested dict: material → {A1A3, A4, A5, C1, C2, C3, C4, total, AP, EP}"""
+    """Returns nested dict: material → {A1A3, A4, A5, C1, C2, C3, C4, total, AP, EP}
+
+    Supports sub-material rows (e.g. "Concrete — M20 (OPC)") created by the
+    material-quantities input method. Each such row carries a 'category' field
+    that maps it back to the correct GWP, AP, EP, and C3 lookup tables.
+    The sub_type in emission_inputs is used for the precise per-grade GWP factor.
+    """
     results = {}
     for row in waste_table:
         mat   = row["material"]
         qty_t = row["waste_tonnes"]
         if qty_t <= 0:
             continue
+        # 'category' is the base material category (e.g. "Concrete") — used for
+        # all factor lookups. Falls back to mat itself for rows without sub-materials.
+        cat = row.get("category", mat)
+
         ei    = emission_inputs.get(mat, {})
         sub   = ei.get("sub_type", "Generic")
         veh   = ei.get("vehicle", "Diesel Truck (> 7.5 t)")
         dist  = float(ei.get("distance_km", 20))
         dist_c2 = float(ei.get("distance_km_c2", 10))
-        eol   = ei.get("eol", DEFAULT_EOL.get(mat, {"Recycle":50,"Reuse":20,"Landfill":30,"Incineration":0,"Other":0}))
+        eol   = ei.get("eol", DEFAULT_EOL.get(cat, {"Recycle":50,"Reuse":20,"Landfill":30,"Incineration":0,"Other":0}))
 
-        gwp_map = MATERIAL_GWP_A1A3.get(mat, {"Generic": 50.0})
+        # GWP A1-A3: look up by category, then exact sub_type within that map
+        gwp_map = MATERIAL_GWP_A1A3.get(cat, MATERIAL_GWP_A1A3.get(mat, {"Generic": 50.0}))
         gwp_a1a3_factor = gwp_map.get(sub, gwp_map.get("Generic", 50.0))  # kg CO2e / tonne
         A1A3 = gwp_a1a3_factor * qty_t
 
@@ -1002,11 +1030,11 @@ def compute_emissions(waste_table, emission_inputs):
 
         C1   = tf * dist * qty_t         # demolition assumed same vehicle+distance
         C2   = tf * dist_c2 * qty_t
-        C3   = C3_PROCESSING_EF.get(mat, 5.0) * qty_t
+        C3   = C3_PROCESSING_EF.get(cat, C3_PROCESSING_EF.get(mat, 5.0)) * qty_t
         C4   = C4_LANDFILL_CO2E * qty_t * (eol.get("Landfill", 0)/100.0)
 
-        ap  = AP_FACTORS.get(mat, 0.5) * qty_t
-        ep  = EP_FACTORS.get(mat, 0.07) * qty_t
+        ap  = AP_FACTORS.get(cat, AP_FACTORS.get(mat, 0.5)) * qty_t
+        ep  = EP_FACTORS.get(cat, EP_FACTORS.get(mat, 0.07)) * qty_t
 
         results[mat] = {
             "qty_t": qty_t,
@@ -1015,6 +1043,7 @@ def compute_emissions(waste_table, emission_inputs):
             "total_gwp": A1A3 + A4 + A5 + C1 + C2 + C3 + C4,
             "AP": ap, "EP": ep,
             "eol": eol,
+            "category": cat,
         }
     return results
 
@@ -1069,11 +1098,11 @@ def compute_circularity_benefits(emission_results, city_str=""):
         reuse_t   = qty_t * eol.get("Reuse", 0) / 100.0
         landfill_t= qty_t * eol.get("Landfill", 0) / 100.0
 
-        gwp_map = MATERIAL_GWP_A1A3.get(mat, {"Generic": 50.0})
+        gwp_map = MATERIAL_GWP_A1A3.get(r.get("category", mat), MATERIAL_GWP_A1A3.get(mat, {"Generic": 50.0}))
         avg_gwp = list(gwp_map.values())[0]
         avoided_em = (recycle_t + reuse_t) * abs(avg_gwp) * RECYCLING_EFFICIENCY  # kg CO2e
 
-        vp  = VIRGIN_PRICE.get(mat, 5000)
+        vp  = VIRGIN_PRICE.get(r.get("category", mat), VIRGIN_PRICE.get(mat, 5000))
         virgin_savings = (recycle_t + reuse_t) * vp  # INR
 
         landfill_diverted_t = recycle_t + reuse_t
@@ -1734,9 +1763,10 @@ def page_waste_estimation():
     # MATERIAL QUANTITIES
     # ────────────────────────────────────────────────────────────────────────
     elif method == "material":
-        st.markdown('<div class="info-box">📋 Select which materials are present, then enter their quantities.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info-box">📋 Select material categories, then add one or more specific sub-materials (e.g. M20, M35, AAC Block) under each. Waste is summed per category for display but each sub-material uses its own accurate LCA factor.</div>', unsafe_allow_html=True)
 
-        st.markdown("#### Step 1 — Which materials are on your site?")
+        # ── Step 1: pick categories ───────────────────────────────────────────
+        st.markdown("#### Step 1 — Which material categories are on your site?")
         if "mq_sel" not in st.session_state:
             st.session_state.mq_sel = {m: False for m in ALL_MATERIALS}
 
@@ -1750,51 +1780,140 @@ def page_waste_estimation():
         selected = [m for m in ALL_MATERIALS if st.session_state.mq_sel.get(m, False)]
 
         if not selected:
-            st.info("☝️ Tick the materials present on your site above.")
+            st.info("☝️ Tick the material categories present on your site above.")
             st.button("← Back", on_click=lambda: go(2))
             return
 
-        st.markdown("#### Step 2 — Enter quantities")
-        st.caption("Total material quantity used (not just waste). Waste % = fraction that becomes waste.")
+        # ── Step 2: per-category sub-material rows ────────────────────────────
+        st.markdown("#### Step 2 — Add sub-materials and quantities")
+        st.caption("Each category can have multiple specific grades/types. Quantities and waste % entered per sub-material. Waste is summed per category for the waste report; LCA uses each sub-material's individual factor.")
 
-        hdr = st.columns([3, 2, 1.5, 1.5])
-        hdr[0].markdown("**Material**"); hdr[1].markdown("**Quantity**")
-        hdr[2].markdown("**Unit**");     hdr[3].markdown("**Waste %**")
+        # We store sub-material rows in session state as a list of dicts per category
+        # Structure: st.session_state.mq_rows = {category: [{sub, qty, unit, wf}, ...]}
+        if "mq_rows" not in st.session_state:
+            st.session_state.mq_rows = {}
+
+        # Sync: add new categories, remove deselected ones
+        for mat in selected:
+            if mat not in st.session_state.mq_rows:
+                sub_options = MATERIAL_SUBCATEGORIES.get(mat, ["Generic"])
+                st.session_state.mq_rows[mat] = [
+                    {"sub": sub_options[0], "qty": 0.0, "unit": "tonnes", "wf": DEFAULT_WF[mat][ptype]}
+                ]
+        for mat in list(st.session_state.mq_rows.keys()):
+            if mat not in selected:
+                del st.session_state.mq_rows[mat]
 
         for mat in selected:
+            sub_options = MATERIAL_SUBCATEGORIES.get(mat, ["Generic"])
             wf_def = DEFAULT_WF[mat][ptype]
-            row = st.columns([3, 2, 1.5, 1.5])
-            row[0].write(mat)
-            row[1].number_input("q", min_value=0.0, key=f"mqqty_{mat}", label_visibility="collapsed")
-            row[2].selectbox("u", UNITS, key=f"mqunit_{mat}", label_visibility="collapsed")
-            row[3].number_input("w", min_value=0.0, max_value=100.0,
-                                value=float(wf_def), key=f"mqwf_{mat}", label_visibility="collapsed")
+            rows = st.session_state.mq_rows[mat]
 
-        st.caption(f"Default waste %: CSE (2020) p.30 — 4–30% for construction; 100% for demolition.")
+            with st.expander(f"**{mat}**", expanded=True):
+                # Column headers
+                hdr = st.columns([2.5, 1.5, 1.5, 1.2, 0.6])
+                hdr[0].markdown("**Sub-material / Grade**")
+                hdr[1].markdown("**Quantity**")
+                hdr[2].markdown("**Unit**")
+                hdr[3].markdown("**Waste %**")
+                hdr[4].markdown("**Del**")
+
+                rows_to_delete = []
+                for idx, row_data in enumerate(rows):
+                    cols = st.columns([2.5, 1.5, 1.5, 1.2, 0.6])
+                    cur_sub = row_data.get("sub", sub_options[0])
+                    sub_idx = sub_options.index(cur_sub) if cur_sub in sub_options else 0
+
+                    new_sub  = cols[0].selectbox("sub", sub_options, index=sub_idx,
+                                                  key=f"mqsub_{mat}_{idx}", label_visibility="collapsed")
+                    new_qty  = cols[1].number_input("qty", min_value=0.0,
+                                                     value=float(row_data.get("qty", 0.0)),
+                                                     key=f"mqqty_{mat}_{idx}", label_visibility="collapsed")
+                    new_unit = cols[2].selectbox("unit", UNITS,
+                                                  index=UNITS.index(row_data.get("unit", "tonnes")),
+                                                  key=f"mqunit_{mat}_{idx}", label_visibility="collapsed")
+                    new_wf   = cols[3].number_input("wf%", min_value=0.0, max_value=100.0,
+                                                     value=float(row_data.get("wf", wf_def)),
+                                                     key=f"mqwf_{mat}_{idx}", label_visibility="collapsed")
+                    if len(rows) > 1:
+                        if cols[4].button("✕", key=f"mqdel_{mat}_{idx}"):
+                            rows_to_delete.append(idx)
+
+                    # Update in-place
+                    rows[idx] = {"sub": new_sub, "qty": new_qty, "unit": new_unit, "wf": new_wf}
+
+                # Remove deleted rows (reverse order to preserve indices)
+                for idx in sorted(rows_to_delete, reverse=True):
+                    rows.pop(idx)
+
+                # Add row button
+                if st.button(f"＋ Add another {mat} type", key=f"mqadd_{mat}"):
+                    rows.append({"sub": sub_options[0], "qty": 0.0, "unit": "tonnes", "wf": wf_def})
+                    st.rerun()
+
+                # Show category waste preview
+                cat_waste = 0.0
+                for rd in rows:
+                    q = float(rd.get("qty", 0.0))
+                    u = rd.get("unit", "tonnes")
+                    wf = float(rd.get("wf", wf_def)) / 100.0
+                    if u == "kg":    q_t = q / 1000.0
+                    elif u == "m³":  q_t = q * DENSITY.get(mat, 1.5)
+                    elif u == "nos": q_t = q * 0.003
+                    else:            q_t = q
+                    cat_waste += q_t * wf
+                if cat_waste > 0:
+                    st.caption(f"↳ Total waste from {mat}: **{cat_waste:.3f} t**")
+
+            st.session_state.mq_rows[mat] = rows
+
+        st.caption("Default waste %: CSE (2020) p.30 — 4–30% for construction; 100% for demolition.")
+        st.divider()
 
         col_b, col_n = st.columns([1, 4])
         col_b.button("← Back", on_click=lambda: go(2), key="mq_back")
         if col_n.button("✅ Calculate & Proceed to Emissions →", type="primary", key="mq_go"):
             tbl = []
+            # Prefill emission_inputs so Page 4 picks up the correct sub_type per row
+            ei_prefill = {}
             for mat in selected:
-                qty  = float(st.session_state.get(f"mqqty_{mat}",  0.0))
-                unit =       st.session_state.get(f"mqunit_{mat}", "tonnes")
-                wf   = float(st.session_state.get(f"mqwf_{mat}",   DEFAULT_WF[mat][ptype])) / 100.0
-                if qty <= 0:
-                    continue
-                if   unit == "kg":  qty_t = qty / 1000.0
-                elif unit == "m³":  qty_t = qty * DENSITY.get(mat, 1.5)
-                elif unit == "nos": qty_t = qty * 0.003
-                else:               qty_t = qty
-                waste_t = qty_t * wf
-                if waste_t > 0:
-                    tbl.append({"material": mat, "qty_input": qty, "unit": unit, "waste_tonnes": waste_t})
+                rows = st.session_state.mq_rows.get(mat, [])
+                for idx, rd in enumerate(rows):
+                    qty  = float(rd.get("qty", 0.0))
+                    unit = rd.get("unit", "tonnes")
+                    wf   = float(rd.get("wf", DEFAULT_WF[mat][ptype])) / 100.0
+                    sub  = rd.get("sub", MATERIAL_SUBCATEGORIES.get(mat, ["Generic"])[0])
+                    if qty <= 0:
+                        continue
+                    if   unit == "kg":  qty_t = qty / 1000.0
+                    elif unit == "m³":  qty_t = qty * DENSITY.get(mat, 1.5)
+                    elif unit == "nos": qty_t = qty * 0.003
+                    else:               qty_t = qty
+                    waste_t = qty_t * wf
+                    if waste_t <= 0:
+                        continue
+                    # Use "Material (Sub)" as the row key when there are multiple sub-types
+                    if len([r for r in rows if float(r.get("qty",0))>0]) > 1 or sub != MATERIAL_SUBCATEGORIES.get(mat, ["Generic"])[0]:
+                        row_key = f"{mat} — {sub}" if any(
+                            rd2.get("sub") != sub for rd2 in rows if float(rd2.get("qty",0))>0
+                        ) else mat
+                    else:
+                        row_key = mat
+                    # If key already exists (same sub twice), make unique
+                    base_key = row_key
+                    suffix = 2
+                    while row_key in [r["material"] for r in tbl]:
+                        row_key = f"{base_key} #{suffix}"
+                        suffix += 1
+                    tbl.append({"material": row_key, "qty_input": qty, "unit": unit, "waste_tonnes": waste_t, "category": mat})
+                    # Pre-fill sub_type in emission_inputs so LCA page auto-selects it
+                    ei_prefill[row_key] = {"sub_type": sub}
 
             if not tbl:
                 st.error("Please enter at least one quantity greater than 0.")
             else:
                 st.session_state.waste_table      = tbl
-                st.session_state.emission_inputs  = {}
+                st.session_state.emission_inputs  = ei_prefill
                 st.session_state.results          = {}
                 st.session_state.page             = 4
                 st.rerun()
@@ -2140,10 +2259,11 @@ def page_emissions_eol():
     for row in waste_table:
         mat = row["material"]
         qty_t = row["waste_tonnes"]
+        cat = row.get("category", mat)   # base category for factor lookups
         with st.expander(f"**{mat}** — {qty_t:.3f} tonnes", expanded=False):
             c1, c2, c3 = st.columns(3)
 
-            gwp_map = MATERIAL_GWP_A1A3.get(mat, {"Generic": 50.0})
+            gwp_map = MATERIAL_GWP_A1A3.get(cat, MATERIAL_GWP_A1A3.get(mat, {"Generic": 50.0}))
             sub_types = list(gwp_map.keys())
             cur_sub = ei.get(mat, {}).get("sub_type", sub_types[0])
             sub_idx = sub_types.index(cur_sub) if cur_sub in sub_types else 0
@@ -2161,7 +2281,7 @@ def page_emissions_eol():
                 dist = st.number_input("Distance to waste site (km)", min_value=0.0, value=float(ei.get(mat, {}).get("distance_km", 20)), key=f"dist_{mat}")
                 dist_c2 = st.number_input("Distance to recycling/landfill (km)", min_value=0.0, value=float(ei.get(mat, {}).get("distance_km_c2", 10)), key=f"dist_c2_{mat}")
 
-            default_eol = DEFAULT_EOL.get(mat, {"Reuse": 0, "Recycle": 50, "Landfill": 40, "Incineration": 5, "Other": 5})
+            default_eol = DEFAULT_EOL.get(cat, DEFAULT_EOL.get(mat, {"Reuse": 0, "Recycle": 50, "Landfill": 40, "Incineration": 5, "Other": 5}))
             cur_eol = ei.get(mat, {}).get("eol", default_eol)
             with c3:
                 st.markdown("**End-of-Life routing** — remaining % goes automatically to **Landfill**")
