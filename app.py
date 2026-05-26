@@ -322,6 +322,30 @@ def _get_firestore_client():
     return _fb_fs.client()
 
 
+def _safe_fs_key(k):
+    """Sanitise a string for use as a Firestore map key.
+    Firestore forbids keys containing '/', and keys with special chars like '—'
+    can cause issues in some client versions. Replace with safe equivalents."""
+    return (str(k)
+            .replace("/", "_")
+            .replace("\\", "_")
+            .replace(".", "_")
+            .replace(" — ", "__")
+            .replace("—", "__"))
+
+
+def _sanitise_dict_keys(d):
+    """Recursively sanitise all dict keys in a nested structure."""
+    if isinstance(d, dict):
+        return {_safe_fs_key(k): _sanitise_dict_keys(v) for k, v in d.items()}
+    if isinstance(d, list):
+        return [_sanitise_dict_keys(i) for i in d]
+    # Firestore does not accept Python None — replace with empty string
+    if d is None:
+        return ""
+    return d
+
+
 def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
                      circ_scores, circ_aggregate, benefits):
     """Store full structured data + formatted report in Firestore collection 'submissions'."""
@@ -333,7 +357,7 @@ def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
             circ_scores, circ_aggregate, benefits
         )
 
-        safe_name = proj.get("name","unknown").replace(" ","_")[:30]
+        safe_name = proj.get("name", "unknown").replace(" ", "_")[:30]
         doc_id    = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + safe_name
 
         # ── Compute summary totals ───────────────────────────────────────────
@@ -341,96 +365,116 @@ def log_to_firestore(proj, waste_table, emission_inputs, emission_results,
         total_gwp     = round(sum(r["total_gwp"] for r in emission_results.values()) / 1000.0, 4)
         total_ap      = round(sum(r["AP"]        for r in emission_results.values()), 4)
         total_ep      = round(sum(r["EP"]        for r in emission_results.values()), 6)
-        total_avoided = round(sum(b.get("avoided_emission_kgco2e",0)    for b in benefits.values()) / 1000.0, 4)
-        total_vsav    = round(sum(b.get("virgin_material_savings_inr",0) for b in benefits.values()), 0)
-        total_lfdiv   = round(sum(b.get("landfill_diverted_t",0)         for b in benefits.values()), 3)
-        total_lfsav   = round(sum(b.get("landfill_cost_saved_inr",0)     for b in benefits.values()), 0)
+        total_avoided = round(sum(b.get("avoided_emission_kgco2e", 0)    for b in benefits.values()) / 1000.0, 4)
+        total_vsav    = round(sum(b.get("virgin_material_savings_inr", 0) for b in benefits.values()), 0)
+        total_lfdiv   = round(sum(b.get("landfill_diverted_t", 0)         for b in benefits.values()), 3)
+        total_lfsav   = round(sum(b.get("landfill_cost_saved_inr", 0)     for b in benefits.values()), 0)
 
-        # ── Serialise per-material results to plain dicts ────────────────────
-        emission_results_serial = {
-            mat: {
-                "A1A3": round(r.get("A1A3", 0), 2),
-                "A4":   round(r.get("A4",   0), 2),
-                "A5":   round(r.get("A5",   0), 2),
-                "C1":   round(r.get("C1",   0), 2),
-                "C2":   round(r.get("C2",   0), 2),
-                "C3":   round(r.get("C3",   0), 2),
-                "C4":   round(r.get("C4",   0), 2),
-                "AP":   round(r.get("AP",   0), 4),
-                "EP":   round(r.get("EP",   0), 6),
-                "total_gwp": round(r.get("total_gwp", 0), 2),
-                "qty_t":     round(r.get("qty_t", 0), 3),
-                "eol":       r.get("eol", {}),
+        # ── Serialise waste_table — strip internal-only fields, sanitise keys ─
+        waste_table_serial = [
+            {
+                "material":     str(row.get("material", "")),
+                "category":     str(row.get("category", row.get("material", ""))),
+                "waste_tonnes": round(float(row.get("waste_tonnes", 0)), 4),
+                "unit":         str(row.get("unit", "tonnes")),
             }
-            for mat, r in emission_results.items()
+            for row in waste_table
+        ]
+
+        # ── Serialise per-material emission results ──────────────────────────
+        emission_results_serial = {}
+        for mat, r in emission_results.items():
+            emission_results_serial[_safe_fs_key(mat)] = {
+                "material_label": str(mat),
+                "category":       str(r.get("category", mat)),
+                "A1A3":      round(float(r.get("A1A3", 0)), 2),
+                "A4":        round(float(r.get("A4",   0)), 2),
+                "A5":        round(float(r.get("A5",   0)), 2),
+                "C1":        round(float(r.get("C1",   0)), 2),
+                "C2":        round(float(r.get("C2",   0)), 2),
+                "C3":        round(float(r.get("C3",   0)), 2),
+                "C4":        round(float(r.get("C4",   0)), 2),
+                "AP":        round(float(r.get("AP",   0)), 4),
+                "EP":        round(float(r.get("EP",   0)), 6),
+                "total_gwp": round(float(r.get("total_gwp", 0)), 2),
+                "qty_t":     round(float(r.get("qty_t", 0)), 3),
+                "eol":       {str(k): int(v) for k, v in r.get("eol", {}).items()},
+            }
+
+        # ── Serialise benefits ───────────────────────────────────────────────
+        benefits_serial = {}
+        for mat, b in benefits.items():
+            benefits_serial[_safe_fs_key(mat)] = {
+                "material_label":              str(mat),
+                "recycled_t":                  round(float(b.get("recycled_t", 0)), 3),
+                "reused_t":                    round(float(b.get("reused_t", 0)), 3),
+                "landfill_t":                  round(float(b.get("landfill_t", 0)), 3),
+                "landfill_diverted_t":         round(float(b.get("landfill_diverted_t", 0)), 3),
+                "avoided_emission_kgco2e":     round(float(b.get("avoided_emission_kgco2e", 0)), 3),
+                "virgin_material_savings_inr": round(float(b.get("virgin_material_savings_inr", 0)), 0),
+                "landfill_cost_saved_inr":     round(float(b.get("landfill_cost_saved_inr", 0)), 0),
+                "landfill_cost_actual_inr":    round(float(b.get("landfill_cost_actual_inr", 0)), 0),
+                "landfill_cost_per_tonne":     float(b.get("landfill_cost_per_tonne", 0)),
+            }
+
+        # ── Serialise circularity scores ─────────────────────────────────────
+        circ_scores_serial = {
+            _safe_fs_key(mat): round(float(sc) * 100, 2)
+            for mat, sc in circ_scores.items()
         }
 
-        benefits_serial = {
-            mat: {
-                "recycled_t":                  round(b.get("recycled_t", 0), 3),
-                "reused_t":                    round(b.get("reused_t", 0), 3),
-                "landfill_t":                  round(b.get("landfill_t", 0), 3),
-                "landfill_diverted_t":         round(b.get("landfill_diverted_t", 0), 3),
-                "avoided_emission_kgco2e":     round(b.get("avoided_emission_kgco2e", 0), 3),
-                "virgin_material_savings_inr": round(b.get("virgin_material_savings_inr", 0), 0),
-                "landfill_cost_saved_inr":     round(b.get("landfill_cost_saved_inr", 0), 0),
-                "landfill_cost_actual_inr":    round(b.get("landfill_cost_actual_inr", 0), 0),
-                "landfill_cost_per_tonne":     b.get("landfill_cost_per_tonne", 0),
+        # ── Serialise transport inputs ────────────────────────────────────────
+        transport_serial = {}
+        for mat, ei_val in emission_inputs.items():
+            transport_serial[_safe_fs_key(mat)] = {
+                "material_label": str(mat),
+                "vehicle":        str(ei_val.get("vehicle", "")),
+                "distance_km":    float(ei_val.get("distance_km", 0)),
+                "distance_km_c2": float(ei_val.get("distance_km_c2", 0)),
+                "sub_type":       str(ei_val.get("sub_type", "")),
             }
-            for mat, b in benefits.items()
-        }
 
-        circ_scores_serial = {mat: round(sc * 100, 2) for mat, sc in circ_scores.items()}
-
-        transport_serial = {
-            mat: {
-                "vehicle":      ei.get("vehicle", ""),
-                "distance_km":  ei.get("distance_km", 0),
-                "distance_km_c2": ei.get("distance_km_c2", 0),
-                "sub_type":     ei.get("sub_type", ""),
-            }
-            for mat, ei in emission_inputs.items()
-        }
-
-        db.collection("submissions").document(doc_id).set({
-            # ── Identity & timestamps ────────────────────────────────────────
-            "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "project_name":      proj.get("name", ""),
-            "city":              proj.get("location", ""),
-            # ── INPUTS: project metadata ────────────────────────────────────
+        # ── Write to Firestore ────────────────────────────────────────────────
+        doc_payload = {
+            "timestamp":    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "project_name": str(proj.get("name", "")),
+            "city":         str(proj.get("location", "")),
             "inputs": {
-                "project_type":    proj.get("construction_type", ""),
-                "building_type":   proj.get("building_type", ""),
-                "builtup_area_m2": proj.get("builtup_area", ""),
-                "plot_area_m2":    proj.get("plot_area", ""),
-                "num_floors":      proj.get("num_floors", ""),
-                "input_method":    proj.get("input_method", ""),
-                "locality":        proj.get("locality", ""),
-                "waste_table":     waste_table,
+                "project_type":     str(proj.get("construction_type", "")),
+                "building_type":    str(proj.get("building_type", "")),
+                "builtup_area_m2":  float(proj.get("builtup_area", 0) or 0),
+                "plot_area_m2":     float(proj.get("plot_area", 0) or 0),
+                "num_floors":       int(proj.get("num_floors", 0) or 0),
+                "input_method":     str(proj.get("input_method", "")),
+                "locality":         str(proj.get("locality", "")),
+                "waste_table":      waste_table_serial,
                 "transport_inputs": transport_serial,
             },
-            # ── OUTPUTS: computed results ────────────────────────────────────
             "outputs": {
                 "summary": {
-                    "total_waste_t":          total_waste,
-                    "total_gwp_tco2e":        total_gwp,
-                    "total_ap_kg_so2e":       total_ap,
-                    "total_ep_kg_po4e":       total_ep,
-                    "circularity_score":      round(circ_aggregate * 100, 1),
+                    "total_waste_t":           total_waste,
+                    "total_gwp_tco2e":         total_gwp,
+                    "total_ap_kg_so2e":        total_ap,
+                    "total_ep_kg_po4e":        total_ep,
+                    "circularity_score":       round(float(circ_aggregate) * 100, 1),
                     "avoided_emissions_tco2e": total_avoided,
-                    "virgin_mat_savings_inr": total_vsav,
-                    "landfill_diverted_t":    total_lfdiv,
+                    "virgin_mat_savings_inr":  total_vsav,
+                    "landfill_diverted_t":     total_lfdiv,
                     "landfill_cost_saved_inr": total_lfsav,
                 },
-                "per_material_emissions": emission_results_serial,
+                "per_material_emissions":   emission_results_serial,
                 "per_material_circularity": circ_scores_serial,
                 "per_material_benefits":    benefits_serial,
             },
-            # ── Human-readable full report ───────────────────────────────────
             "report": report_str,
-        })
-    except Exception:
-        pass  # silent — never interrupt the user
+        }
+
+        db.collection("submissions").document(doc_id).set(doc_payload)
+
+    except Exception as e:
+        # Store error in session state so it's visible during development;
+        # never raises — never interrupts the user flow.
+        st.session_state["_firestore_error"] = str(e)
 
 # ─── PAGE CONFIG ────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -2354,6 +2398,10 @@ def page_results():
 
     if not res:
         st.error("No results yet. Please go back."); return
+
+    # Show Firestore error if one was captured (only visible in dev; harmless in prod)
+    if "_firestore_error" in st.session_state:
+        st.warning(f"⚠️ Firestore log failed: {st.session_state['_firestore_error']}", icon="🔥")
 
     er  = res["emission_results"]
     cs  = res["circ_scores"]
