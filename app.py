@@ -1250,8 +1250,8 @@ def compute_circularity_benefits(emission_results, city_str=""):
         virgin_savings = (recycle_t + reuse_t) * vp  # INR
 
         landfill_diverted_t = recycle_t + reuse_t
-        landfill_cost_saved = landfill_t * lf_cost   # INR (avoided landfill cost)
-        landfill_cost_actual= landfill_t * lf_cost   # INR
+        landfill_cost_saved = landfill_diverted_t * lf_cost  # INR: cost saved by diverting material away from landfill
+        landfill_cost_actual= landfill_t * lf_cost           # INR: actual disposal cost for mass that still goes to landfill
 
         output[mat] = {
             "recycled_t": recycle_t,
@@ -1598,16 +1598,21 @@ def generate_pdf_report(project, waste_table, emission_results, circ_scores, cir
     # ── SECTION 2 — ENVIRONMENTAL IMPACT ─────────────────────────────────────
     if emission_results:
         E += section("2 — Environmental Impact")
-        # 7 cols: Material + 6 numeric — widths sum exactly to page_w
-        cw2 = [page_w*0.22, page_w*0.13, page_w*0.13,
-                page_w*0.13, page_w*0.13, page_w*0.13, page_w*0.13]
-        ed = [[H("Material"), H("A1–A3\n(kgCO\u2082e)"), H("Transport\n(kgCO\u2082e)"),
-               H("EOL\n(kgCO\u2082e)"), H("Total GWP\n(kgCO\u2082e)"),
+        # 8 cols: Material + 7 numeric (A5 shown explicitly so no stage is hidden)
+        # Transport = A4+C1+C2 (inbound + demolition + outbound transport)
+        # Construction = A5 (on-site construction waste / energy)
+        # EOL = C3+C4 (processing + landfill)
+        cw2 = [page_w*0.20, page_w*0.12, page_w*0.11,
+                page_w*0.11, page_w*0.12, page_w*0.11, page_w*0.11, page_w*0.12]
+        ed = [[H("Material"), H("A1–A3\n(kgCO\u2082e)"),
+               H("Transport\n(A4+C1+C2)"), H("Construction\n(A5)"),
+               H("EOL\n(C3+C4)"), H("Total GWP\n(kgCO\u2082e)"),
                H("AP\n(kgSO\u2082e)"), H("EP\n(kgPO\u2084e)")]]
         for m, r in emission_results.items():
             ed.append([C(m),
                        C(f"{r['A1A3']:.1f}"),
                        C(f"{r['A4']+r['C1']+r['C2']:.1f}"),
+                       C(f"{r['A5']:.1f}"),
                        C(f"{r['C3']+r['C4']:.1f}"),
                        C(f"{r['total_gwp']:.1f}"),
                        C(f"{r['AP']:.2f}"),
