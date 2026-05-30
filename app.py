@@ -813,6 +813,18 @@ TRANSPORT_EF = {
     "Electric Vehicle":          0.04,   # CEA grid 0.716 kgCO2e/kWh (2024) x ~0.056 kWh/t-km average EV
 }
 A5_FACTOR = 0.0015   # kg CO2e / kg material — on-site activities [S4]
+
+# C1 Demolition energy (kg CO2e / tonne of material demolished)
+# Source: Excavator/hydraulic breaker ~3 kWh/t × CEA 2024 grid EF 0.716 kgCO2/kWh = 2.15 kg/t;
+#         plant overhead + diesel machinery adds ~3–8 kg/t depending on material hardness.
+#         Alotaibi et al. (2022) MDPI Buildings — C1 ≈ 0.2% of lifecycle; AEEE/Saint-Gobain (2024).
+#         Concrete/masonry: mechanical breaking is energy-intensive (~5–8 kg/t)
+#         Steel: cutting/shearing lower energy (~3 kg/t); Soil: minimal (~1 kg/t)
+C1_DEMOLITION_EF = {
+    "Concrete": 6.0, "Brick/Masonry": 4.0, "Steel/Metal": 3.0, "Wood/Timber": 2.0,
+    "Glass": 2.5, "Plastic": 2.0, "Bitumen": 3.0, "Soil/Sand/Gravel": 1.0, "Others": 4.0,
+}
+
 C3_PROCESSING_EF = {
     # kg CO2e / tonne — C&D recycling / processing energy [S3][S4][S8]
     # Derived from crushing/processing energy x Indian grid EF (CEA 2024: 0.716 kgCO2/kWh):
@@ -1072,9 +1084,18 @@ def compute_emissions(waste_table, emission_inputs):
         A4   = tf * dist * qty_t         # kg CO2e
         A5   = A5_FACTOR * qty_t * 1000  # kg CO2e
 
-        C1   = tf * dist * qty_t         # demolition assumed same vehicle+distance
+        # C1: demolition machinery energy — excavator/breaker ~3 kWh/t × Indian grid
+        # 0.716 kgCO2/kWh (CEA 2024) = ~2.15 kg CO2e/t; +diesel plant overhead ~5 kg/t
+        # Source: Alotaibi et al. (2022) MDPI Buildings; AEEE/Saint-Gobain (2024)
+        C1   = C1_DEMOLITION_EF.get(cat, C1_DEMOLITION_EF.get(mat, 5.0)) * qty_t
+
         C2   = tf * dist_c2 * qty_t
-        C3   = C3_PROCESSING_EF.get(cat, C3_PROCESSING_EF.get(mat, 5.0)) * qty_t
+
+        # C3: processing energy applies only to the fraction that is recycled
+        # (material going to landfill or reuse does not pass through a crushing plant)
+        recycle_frac = eol.get("Recycle", 0) / 100.0
+        C3   = C3_PROCESSING_EF.get(cat, C3_PROCESSING_EF.get(mat, 5.0)) * qty_t * recycle_frac
+
         C4   = C4_LANDFILL_CO2E * qty_t * (eol.get("Landfill", 0)/100.0)
 
         ap  = AP_FACTORS.get(cat, AP_FACTORS.get(mat, 0.5)) * qty_t
@@ -1690,9 +1711,18 @@ def page_waste_estimation():
         "Glass":             {"Construction": 4.0,  "Demolition": 80.0},
         "Others":            {"Construction": 10.0, "Demolition": 80.0},
     }
-    DENSITY = {"Concrete": 2.4, "Brick/Masonry": 1.8, "Soil/Sand/Gravel": 1.7,
-               "Steel/Metal": 7.85, "Wood/Timber": 0.7, "Bitumen": 1.2,
+    DENSITY = {"Concrete": 2.4, "Brick/Masonry": 1.80, "Soil/Sand/Gravel": 1.7,
+               "Steel/Metal": 7.85, "Wood/Timber": 0.7, "Bitumen": 2.3,
                "Plastic": 0.9, "Glass": 2.5, "Others": 1.5}
+    # Sub-type specific densities (t/m³) -- override category DENSITY when sub-type is known
+    # AAC blocks: 550-650 kg/m³ (IS 2185 Part 3); Fly ash brick ~1.1 t/m³; FaLG ~0.9 t/m³
+    # Red brick solid: 1.6-1.9 t/m³; Asphalt mix (laid): 2.2-2.4 t/m³
+    # Sources: IS 2185-3 (AAC), IS 12894 (fly ash brick), CPWD specifications
+    SUB_DENSITY = {
+        "AAC Block": 0.60, "Fly Ash Brick": 1.10, "FaLG Block": 0.90,
+        "Red Brick (Zigzag Kiln)": 1.80, "Red Brick (Bull's Trench)": 1.80,
+        "Asphalt/Bitumen": 2.30,
+    }
     UNITS = ["tonnes", "kg", "m³", "nos"]
 
     # ────────────────────────────────────────────────────────────────────────
@@ -1901,8 +1931,9 @@ def page_waste_estimation():
                     q = float(rd.get("qty", 0.0))
                     u = rd.get("unit", "tonnes")
                     wf = float(rd.get("wf", wf_def)) / 100.0
+                    sub_rd = rd.get("sub", "")
                     if u == "kg":    q_t = q / 1000.0
-                    elif u == "m³":  q_t = q * DENSITY.get(mat, 1.5)
+                    elif u == "m³":  q_t = q * SUB_DENSITY.get(sub_rd, DENSITY.get(mat, 1.5))
                     elif u == "nos": q_t = q * 0.003
                     else:            q_t = q
                     cat_waste += q_t * wf
@@ -1930,7 +1961,7 @@ def page_waste_estimation():
                     if qty <= 0:
                         continue
                     if   unit == "kg":  qty_t = qty / 1000.0
-                    elif unit == "m³":  qty_t = qty * DENSITY.get(mat, 1.5)
+                    elif unit == "m³":  qty_t = qty * SUB_DENSITY.get(sub, DENSITY.get(mat, 1.5))
                     elif unit == "nos": qty_t = qty * 0.003
                     else:               qty_t = qty
                     waste_t = qty_t * wf
@@ -2058,7 +2089,8 @@ def page_waste_estimation():
         FALLBACK_DENS = {
             "Concrete":2.40, "Brick/Masonry":1.80, "Steel/Metal":7.85,
             "Wood/Timber":0.70, "Glass":2.50, "Soil/Sand/Gravel":1.70,
-            "Bitumen":1.20, "Plastic":0.90, "Others":1.50,
+            "Bitumen":2.30, "Plastic":0.90, "Others":1.50,
+            # AAC Block density handled via SUB_DENSITY in manual input path
         }
 
         def resolve_group(mat_name, cat_name=""):
@@ -2447,7 +2479,25 @@ def page_results():
             if r["material"] != cat:
                 cat_subs[cat].append((r["material"], tons))
 
-        display_rows = [{"Material": cat, "Waste (tonnes)": round(cat_totals[cat], 3)} for cat in cat_totals]
+        # Build EOL-split columns from emission_results (already has eol fractions)
+        def _eol_tonnes(cat_name, total_t, key):
+            # Look up eol from er — find any sub-row that belongs to this category
+            for mat_key, r in er.items():
+                if r.get("category", mat_key) == cat_name or mat_key == cat_name:
+                    return round(total_t * r["eol"].get(key, 0) / 100.0, 3)
+            return 0.0
+
+        display_rows = []
+        for cat in cat_totals:
+            total_t = round(cat_totals[cat], 3)
+            display_rows.append({
+                "Material":           cat,
+                "Total Waste (t)":    total_t,
+                "Reused (t)":         _eol_tonnes(cat, total_t, "Reuse"),
+                "Recycled (t)":       _eol_tonnes(cat, total_t, "Recycle"),
+                "Landfilled (t)":     _eol_tonnes(cat, total_t, "Landfill"),
+            })
+
         df_w = pd.DataFrame(display_rows)
         st.dataframe(df_w, use_container_width=True, hide_index=True)
 
@@ -2458,7 +2508,7 @@ def page_results():
                                  use_container_width=True, hide_index=True)
 
         st.markdown(f'<div class="source-note">Source: {WASTE_RATE_SOURCE} | Composition: {COMP_SOURCE}</div>', unsafe_allow_html=True)
-        st.bar_chart(df_w.set_index("Material")["Waste (tonnes)"])
+        st.bar_chart(df_w.set_index("Material")["Total Waste (t)"])
 
     # ── TAB 2: EMISSIONS ──────────────────────────────────────────────────
     with tab2:
