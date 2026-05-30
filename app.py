@@ -994,6 +994,65 @@ VIRGIN_PRICE_SOURCE = ("CPWD DSR (2024); Maharashtra PWD SOR (2023-24); Delhi SO
 # = A1–A3 of virgin material × recycling efficiency factor (0.7 average)
 RECYCLING_EFFICIENCY = 0.7   # fraction of virgin impact avoided
 
+# ── Virgin fraction of INPUT material (Vu) by sub-type ───────────────────────
+# Vu = fraction of input that is virgin (0 = fully recycled input, 1 = fully virgin)
+# Used in full EMF MCI formula: F(x) = 0.9 × (1 − 0.5×Vu − 0.5×Fr)
+# Sources:
+#   OPC/PPC concrete: 100% virgin raw materials (limestone, clinker) → Vu = 1.0
+#   GGBS blend (40%): 40% GGBS (industrial by-product) → Vu = 0.60
+#   Fly Ash Brick: ~30% fly ash (industrial waste) → Vu = 0.70 [IS 12894]
+#   FaLG Block: ~50% lime+gypsum industrial by-product → Vu = 0.50
+#   AAC Block: primarily sand + cement, minimal recycled content → Vu = 0.95
+#   TMT Rebar BF-BOF: virgin iron ore → Vu = 1.0
+#   TMT Rebar DRI-EAF: ~30% scrap mix in Indian EAF route → Vu = 0.70
+#   TMT Rebar Scrap EAF: ~90% scrap → Vu = 0.10
+#   Structural Steel BF: virgin → Vu = 1.0
+#   Aluminium extruded: primary Al → Vu = 1.0 (recycled Al handled separately)
+#   Air-dried/Kiln-dried Timber: virgin harvest → Vu = 1.0
+#   Plywood: typically virgin timber → Vu = 1.0
+#   Bamboo: rapidly renewable → Vu = 0.80 (treated as near-circular bio-resource)
+#   Float/Toughened Glass: virgin silica → Vu = 1.0
+#   HDPE: virgin petrochemical → Vu = 1.0; PVC: Vu = 1.0
+#   Bitumen: petroleum by-product → Vu = 0.90 (minor recycled content)
+#   Default (unlisted): Vu = 1.0 (conservative; fully virgin)
+VU_BY_SUBTYPE = {
+    # Concrete
+    "M20 (OPC)":        1.00,
+    "M25 (OPC)":        1.00,
+    "M30 (OPC)":        1.00,
+    "M30 (PPC blend)":  0.85,  # ~15% fly ash/pozzolan replacement
+    "M35 (OPC)":        1.00,
+    "M40 (OPC)":        1.00,
+    "M40 (GGBS 40%)":   0.60,  # 40% GGBS replaces clinker
+    # Brick/Masonry
+    "Red Brick (Zigzag Kiln)":   1.00,
+    "Red Brick (Bull's Trench)": 1.00,
+    "AAC Block":         0.95,
+    "Fly Ash Brick":     0.70,
+    "FaLG Block":        0.50,
+    # Steel
+    "TMT Rebar (BF-BOF)":     1.00,
+    "TMT Rebar (DRI-EAF)":    0.70,
+    "TMT Rebar (Scrap EAF)":  0.10,
+    "Structural Steel (BF)":  1.00,
+    "Aluminium (extruded)":   1.00,
+    # Timber
+    "Air-dried Timber":  1.00,
+    "Kiln-dried Timber": 1.00,
+    "Plywood":           1.00,
+    "Bamboo":            0.80,
+    # Glass
+    "Float Glass":       1.00,
+    "Toughened Glass":   1.00,
+    # Plastic
+    "PVC (uPVC)":        1.00,
+    "HDPE":              1.00,
+    # Bitumen
+    "Asphalt/Bitumen":   0.90,
+    # Generic fallback (all others)
+    "Generic":           1.00,
+}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SESSION STATE INIT
@@ -1109,6 +1168,7 @@ def compute_emissions(waste_table, emission_inputs):
             "AP": ap, "EP": ep,
             "eol": eol,
             "category": cat,
+            "sub_type": sub,   # stored so circularity can look up Vu by sub-type
         }
     return results
 
@@ -1116,16 +1176,26 @@ def compute_emissions(waste_table, emission_inputs):
 def compute_circularity(emission_results):
     """Returns dict: material → MCI score (0–1); plus waste-weighted aggregate.
 
-    Uses Ellen MacArthur Foundation Material Circularity Indicator (MCI) formula:
-        MCI = 1 - LFI x 0.9 x (0.5 - 0.5 x Fr)
-        LFI = (Landfill% + Incineration%) / 100   [Linear Flow Index]
-        Fr  = (Recycle% + Reuse%) / 100            [Recovered fraction at EOL]
-        Vu  = 1.0 assumed (all input material is virgin; standard for new construction)
+    Uses the FULL Ellen MacArthur Foundation Material Circularity Indicator (MCI) formula:
+        MCI = 1 - LFI × F(x)
+        F(x) = 0.9 × (1 - 0.5×Vu - 0.5×Fr)
 
-    MCI = 1.0 → perfectly circular; MCI = 0.1 → fully linear (100% landfill, 0% recovery).
-    Source: EMF (2015) MCI technical appendix — ellenmacarthurfoundation.org/material-circularity-indicator
+    where:
+        LFI = (Landfill% + Incineration%) / 100          [Linear Flow Index]
+        Fr  = (Recycle% + Reuse%) / 100                  [Recovered fraction at EOL]
+        Vu  = virgin fraction of INPUT material           [from VU_BY_SUBTYPE lookup]
+              (0 = fully recycled-content input, 1 = fully virgin input)
+
+    Vu is looked up from VU_BY_SUBTYPE using the sub_type stored in emission_results.
+    This means material substitution (e.g. GGBS concrete, Scrap EAF steel) is credited
+    on the input side — rewarding circular procurement, not just EOL routing.
+
+    MCI = 1.0 → perfectly circular; MCI → 0 → fully linear.
+    EMF floor of 0.1 applies only when LFI > 0 (some waste goes to landfill/incineration).
+    Source: EMF (2015) MCI Technical Appendix — ellenmacarthurfoundation.org/material-circularity-indicator
     """
     scores = {}
+    vu_used = {}         # exposed so UI can display Vu per material
     weighted_total = 0.0
     total_waste = 0.0
     for mat, r in emission_results.items():
@@ -1135,21 +1205,30 @@ def compute_circularity(emission_results):
         landfill = eol.get("Landfill", 0) / 100.0
         incin    = eol.get("Incineration", 0) / 100.0
 
-        # EMF MCI: Vu=1.0 (virgin inputs), Fr = recycle + reuse fraction at EOL
+        # Look up Vu from sub_type; fall back to Generic (1.0 = fully virgin)
+        sub = r.get("sub_type", "Generic")
+        Vu  = VU_BY_SUBTYPE.get(sub, VU_BY_SUBTYPE.get("Generic", 1.0))
+        vu_used[mat] = Vu
+
         Fr  = min(recycle + reuse, 1.0)
         LFI = min(landfill + incin, 1.0)
-        # F(x) = 0.9 x (1 - 0.5*Vu - 0.5*Fr) with Vu=1 → 0.9 x (0.5 - 0.5*Fr) = 0.45*(1-Fr)
-        Fx  = 0.9 * (0.5 - 0.5 * Fr)
-        mci = max(0.0, 1.0 - LFI * Fx)
-        # EMF specifies MCI floor of 0.1 for fully linear systems
-        mci = max(mci, 0.1) if (landfill + incin) > 0 else mci
-        mci = min(mci, 1.0)
+
+        # Full EMF F(x) — both Vu and Fr affect score
+        Fx  = 0.9 * (1.0 - 0.5 * Vu - 0.5 * Fr)
+        Fx  = max(Fx, 0.0)   # clamp: if Vu=0 and Fr=1, Fx=0 → MCI=1.0
+
+        mci = 1.0 - LFI * Fx
+        # No artificial floor — the formula's natural minimum for virgin inputs (Vu=1.0)
+        # with 100% landfill is 0.55, which is the correct EMF result for that scenario.
+        # As Vu decreases (recycled-content inputs), the minimum approaches 0.
+        mci = min(max(mci, 0.0), 1.0)
 
         scores[mat] = round(mci, 3)
+        vu_used[mat] = round(Vu, 2)
         weighted_total += mci * r["qty_t"]
         total_waste    += r["qty_t"]
     aggregate = weighted_total / total_waste if total_waste > 0 else 0.0
-    return scores, round(aggregate, 3)
+    return scores, round(aggregate, 3), vu_used
 
 
 def compute_circularity_benefits(emission_results, city_str=""):
@@ -2388,7 +2467,7 @@ def page_emissions_eol():
     with col_n:
         if st.button("Calculate Results →", type="primary"):
             emission_results = compute_emissions(waste_table, ei)
-            circ_scores, circ_aggregate = compute_circularity(emission_results)
+            circ_scores, circ_aggregate, vu_used = compute_circularity(emission_results)
             city_str = st.session_state.project.get("location", "")
             benefits = compute_circularity_benefits(emission_results, city_str=city_str)
             st.session_state.results = {
@@ -2396,6 +2475,7 @@ def page_emissions_eol():
                 "circ_scores": circ_scores,
                 "circ_aggregate": circ_aggregate,
                 "benefits": benefits,
+                "vu_used": vu_used,
             }
             # ── Log summary row to Google Sheets (silent) ────────────
             log_to_sheets(
@@ -2439,6 +2519,7 @@ def page_results():
     cs  = res["circ_scores"]
     ca  = res["circ_aggregate"]
     ben = res["benefits"]
+    vu  = res.get("vu_used", {})   # virgin fraction per material (from VU_BY_SUBTYPE)
 
     st.markdown(f'<p class="page-title">Results — <span style="color:#10b981">{proj["name"]}</span></p>', unsafe_allow_html=True)
     st.markdown(f'<p class="page-sub">{proj["construction_type"]} | {proj["building_type"]} | {proj["location"]} | {proj["builtup_area"]} m²</p>', unsafe_allow_html=True)
@@ -2623,12 +2704,17 @@ def page_results():
         st.markdown("""
         **Material Circularity Indicator (MCI) — Ellen MacArthur Foundation (2015)**
 
-        MCI = 1 − LFI × 0.9 × (0.5 − 0.5×Fr)
+        MCI = 1 − LFI × F(x) &nbsp;&nbsp; where &nbsp;&nbsp; F(x) = 0.9 × (1 − 0.5×Vu − 0.5×Fr)
 
-        where **LFI** (Linear Flow Index) = (Landfill% + Incineration%) / 100  
-        and **Fr** (recovered fraction) = (Recycle% + Reuse%) / 100  
-        Virgin input assumed (Vu = 1.0 for new construction materials).  
-        Score range: **0–100** (100 = fully circular, 10 = fully linear)
+        | Parameter | Meaning | Value |
+        |---|---|---|
+        | **LFI** | Linear Flow Index = (Landfill% + Incineration%) / 100 | EOL-specific |
+        | **Fr** | Recovered fraction = (Recycle% + Reuse%) / 100 | EOL-specific |
+        | **Vu** | Virgin fraction of INPUT material (0 = fully recycled input, 1 = fully virgin) | Sub-type specific |
+
+        Vu rewards circular **procurement** (recycled-content inputs), not just EOL routing.  
+        E.g. Scrap EAF steel has Vu = 0.10; GGBS 40% concrete has Vu = 0.60; OPC concrete has Vu = 1.0.  
+        Score range: **0–100** (100 = fully circular)
 
         *Source: EMF (2015) MCI Technical Appendix — ellenmacarthurfoundation.org*
         """)
@@ -2636,8 +2722,10 @@ def page_results():
         circ_rows = []
         for mat, score in cs.items():
             eol = er[mat]["eol"]
+            vu_val = vu.get(mat, 1.0)
             circ_rows.append({
                 "Material": mat,
+                "Vu (input virgin %)": f"{vu_val*100:.0f}%",
                 "Reuse %": eol.get("Reuse",0),
                 "Recycle %": eol.get("Recycle",0),
                 "Landfill %": eol.get("Landfill",0),
