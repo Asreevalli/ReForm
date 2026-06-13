@@ -504,6 +504,7 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .metric-label{ font-size: 0.8rem; color: #374151; margin-bottom: 4px; font-weight: 500; }
 .warn-box { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 8px; padding: 12px 16px; font-size: 0.85rem; color: #92400e; }
 .info-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px 16px; font-size: 0.85rem; color: #1e40af; }
+.analogy-box { background: #eff6ff; border: 1px solid #bfdbfe; border-left: 4px solid #2563eb; border-radius: 8px; padding: 14px 18px; font-size: 1.05rem; line-height: 1.5; color: #1e3a8a; margin-bottom: 10px; }
 .step-badge { display: inline-block; background: #10b981; color: white; border-radius: 50%; width: 26px; height: 26px; text-align: center; line-height: 26px; font-size: 0.8rem; font-weight: 700; margin-right: 8px; }
 </style>
 """, unsafe_allow_html=True)
@@ -2644,16 +2645,6 @@ def page_emissions_eol():
 
     st.markdown(f'<div class="source-note">📚 GWP factors: {GWP_SOURCE} | Environmental factors: {ENV_SOURCE}</div>', unsafe_allow_html=True)
 
-    # ── Quick waste summary table (reference — full breakdown is on Results) ──
-    st.markdown("#### Waste Summary (from Page 3)")
-    waste_summary_df = pd.DataFrame([
-        {"Material": row["material"], "Waste (tonnes)": round(row["waste_tonnes"], 3)}
-        for row in waste_table
-    ])
-    st.dataframe(waste_summary_df, use_container_width=True, hide_index=True)
-    st.caption(f"Total: {sum(r['waste_tonnes'] for r in waste_table):,.3f} tonnes — set transport, sub-type and end-of-life routing for each material below.")
-    st.divider()
-
     for row in waste_table:
         mat = row["material"]
         qty_t = row["waste_tonnes"]
@@ -2847,119 +2838,7 @@ def page_results():
 
     # ── TAB 2: EMISSIONS ──────────────────────────────────────────────────
     with tab2:
-        proj_type  = proj.get("construction_type", "Construction")
-        pt_key = "Demolition" if proj_type in ["Demolition","Redevelopment"] else "Construction"
-        bldg_type  = proj.get("building_type", "Residential")
-        area_m2    = proj.get("builtup_area", 1.0) or 1.0
-
-        # ── Quick waste summary table (reference — full breakdown is in Waste tab) ──
-        st.markdown("#### Waste Summary")
-        waste_summary_df2 = pd.DataFrame([
-            {"Material": mat, "Waste (tonnes)": round(r["qty_t"], 3)}
-            for mat, r in er.items()
-        ])
-        st.dataframe(waste_summary_df2, use_container_width=True, hide_index=True)
-
-        # ── Summary: GWP footprint in everyday terms (shown first) ──
-        st.markdown('<p class="section-head">🌍 In Everyday Terms — GWP Footprint Summary</p>', unsafe_allow_html=True)
-        st.metric("Total GWP", f"{total_gwp:.2f} t CO₂e")
-        gwp_analogies = render_gwp_footprint_analogies(total_gwp)
-        if gwp_analogies:
-            ac1, ac2 = st.columns(2)
-            for i, a in enumerate(gwp_analogies):
-                (ac1 if i % 2 == 0 else ac2).markdown(
-                    f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
-
-        # ── Summary: avoided emissions in everyday terms (shown first) ──
-        st.markdown('<p class="section-head">🌍 In Everyday Terms — Avoided Emissions Summary</p>', unsafe_allow_html=True)
-        st.metric("Avoided Emissions", f"{total_avoided:.2f} t CO₂e")
-        em_analogies = render_emission_analogies(total_avoided)
-        if em_analogies:
-            ac1, ac2 = st.columns(2)
-            for i, a in enumerate(em_analogies):
-                (ac1 if i % 2 == 0 else ac2).markdown(
-                    f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
-        else:
-            st.info("No avoided emissions to compare yet — adjust end-of-life routing (recycle/reuse) to see equivalencies.")
-        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
-
-        st.divider()
-        st.markdown("### 📊 Detailed Emissions Results")
-
-        # ── 2a: Per-m² Benchmark (Primary display) ──────────────────────
-        st.markdown('<p class="section-head">📐 Environmental Impact Benchmarks per m² BUA</p>', unsafe_allow_html=True)
-        if bldg_type in ("Industrial", "Infrastructure"):
-            st.markdown(
-                f'<div class="warn-box">⚠️ No peer-reviewed India-specific LCA benchmark exists for <b>{bldg_type}</b> projects. '
-                f'Showing <b>Commercial</b> values as proxy. Replace with project-specific data for accurate results.</div>',
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown(
-                f"Lifecycle stage benchmarks for **{bldg_type} {proj_type}** projects in India, "
-                f"expressed per m² of built-up area (BUA). Based on peer-reviewed Indian LCA studies.",
-                unsafe_allow_html=True
-            )
-
-        def _get_bench(table, pt_key, bldg_type, fallback_type="Commercial"):
-            """Get benchmark; fall back to Commercial if type not sourced (None)."""
-            type_dict = table.get(pt_key, table["Construction"])
-            val = type_dict.get(bldg_type)
-            if val is None:
-                val = type_dict.get(fallback_type, table["Construction"]["Residential"])
-            return val or table["Construction"]["Residential"]
-        gwp_bench = _get_bench(GWP_PER_M2, pt_key, bldg_type)
-        ap_bench  = _get_bench(AP_PER_M2,  pt_key, bldg_type)
-        efw_bench = _get_bench(EFW_PER_M2, pt_key, bldg_type)
-
-        stages = ["A1_A3", "A4", "A5", "C1", "C2", "C3", "C4"]
-        stage_labels = {
-            "A1_A3": "A1–A3 Material Mfg",
-            "A4":    "A4 Transport to Site",
-            "A5":    "A5 Site Construction",
-            "C1":    "C1 Demolition",
-            "C2":    "C2 Transport to EOL",
-            "C3":    "C3 Waste Processing",
-            "C4":    "C4 Landfill Disposal",
-        }
-        bench_rows = []
-        for s in stages:
-            if pt_key == "Demolition" and s in ("A1_A3","A4","A5"):
-                continue
-            bench_rows.append({
-                "Stage":                   stage_labels[s],
-                "GWP (kg CO₂e/m²)":       round(gwp_bench.get(s, 0), 2),
-                "AP (kg SO₂e/m²)":         round(ap_bench.get(s, 0), 4),
-                "EFW/EP (kg PO₄e/m²)":     round(efw_bench.get(s, 0), 5),
-            })
-        # Totals row
-        bench_rows.append({
-            "Stage":                   "TOTAL (A1–A5 + C1–C4)",
-            "GWP (kg CO₂e/m²)":       round(sum(gwp_bench.get(s,0) for s in stages), 2),
-            "AP (kg SO₂e/m²)":         round(sum(ap_bench.get(s,0)  for s in stages), 4),
-            "EFW/EP (kg PO₄e/m²)":     round(sum(efw_bench.get(s,0) for s in stages), 5),
-        })
-        df_bench = pd.DataFrame(bench_rows)
-        st.dataframe(df_bench, use_container_width=True, hide_index=True)
-
-        # Project-total from benchmark × area
-        total_gwp_bench = sum(gwp_bench.get(s,0) for s in stages) * area_m2 / 1000.0
-        total_ap_bench  = sum(ap_bench.get(s,0)  for s in stages) * area_m2
-        total_efw_bench = sum(efw_bench.get(s,0) for s in stages) * area_m2
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Project GWP (benchmark)", f"{total_gwp_bench:.1f} t CO₂e", f"{area_m2:,.0f} m²")
-        c2.metric("Project AP (benchmark)",  f"{total_ap_bench:.2f} kg SO₂e")
-        c3.metric("Project EFW (benchmark)", f"{total_efw_bench:.4f} kg PO₄e")
-
-        st.markdown(f'<div class="source-note">📚 {GWP_SOURCE}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="source-note">📚 AP: {AP_SOURCE}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="source-note">📚 EFW: {EFW_SOURCE}</div>', unsafe_allow_html=True)
-
-        st.divider()
-
-        # ── 2b: Waste-Weight Emissions (Material breakdown) ─────────────
+        # ── Direct results table (waste-based emissions) ────────────────
         st.markdown('<p class="section-head">⚖️ Emissions from Estimated Waste Quantities</p>', unsafe_allow_html=True)
         st.caption("Based on material waste tonnes from Page 3 × per-tonne LCA emission factors (CML 2001 / IFC EDGE India)")
         em_rows = []
@@ -2987,6 +2866,30 @@ def page_results():
         mc3.metric("Total EFW", f"{total_ep:.4f} kg PO₄e")
         st.markdown(f'<div class="source-note">Per-tonne factors: IFC EDGE India DB (2017) [S5]; CML 2001 characterisation [S8]; IPCC 2006 [S7]</div>', unsafe_allow_html=True)
 
+        st.divider()
+
+        # ── GWP footprint in everyday terms ──────────────────────────────
+        st.markdown('<p class="section-head">🌍 In Everyday Terms — GWP Footprint</p>', unsafe_allow_html=True)
+        gwp_analogies = render_gwp_footprint_analogies(total_gwp)
+        if gwp_analogies:
+            ac1, ac2 = st.columns(2)
+            for i, a in enumerate(gwp_analogies):
+                (ac1 if i % 2 == 0 else ac2).markdown(
+                    f'<div class="analogy-box">{a}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
+        # ── Avoided emissions in everyday terms ──────────────────────────
+        st.markdown('<p class="section-head">🌍 In Everyday Terms — Avoided Emissions</p>', unsafe_allow_html=True)
+        em_analogies = render_emission_analogies(total_avoided)
+        if em_analogies:
+            ac1, ac2 = st.columns(2)
+            for i, a in enumerate(em_analogies):
+                (ac1 if i % 2 == 0 else ac2).markdown(
+                    f'<div class="analogy-box">{a}</div>', unsafe_allow_html=True)
+        else:
+            st.info("No avoided emissions to compare yet — adjust end-of-life routing (recycle/reuse) to see equivalencies.")
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
     with tab3:
         # ── Summary: circularity in everyday terms (shown first) ──
         st.markdown('<p class="section-head">♻️ In Everyday Terms — Circularity Summary</p>', unsafe_allow_html=True)
@@ -3002,7 +2905,7 @@ def page_results():
         circ_analogies = render_circularity_analogies(total_lf_div, total_recycled, total_reused)
         if circ_analogies:
             for a in circ_analogies:
-                st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="analogy-box">{a}</div>', unsafe_allow_html=True)
         else:
             st.info("No material recovered/diverted yet — increase recycle/reuse % on Page 4 to see equivalencies.")
         st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
@@ -3048,19 +2951,6 @@ def page_results():
         circ_chart = {mat: float(sc)*100 for mat, sc in cs.items()}
         st.bar_chart(pd.DataFrame.from_dict({"Score": circ_chart}, orient="columns"))
 
-        # Material recovery
-        st.markdown('<p class="section-head">Material Recovery Summary</p>', unsafe_allow_html=True)
-        rec_rows = []
-        for mat, b in ben.items():
-            rec_rows.append({
-                "Material": mat,
-                "Recycled (t)": round(b["recycled_t"],2),
-                "Reused (t)":   round(b["reused_t"],2),
-                "Landfilled (t)": round(b["landfill_t"],2),
-                "Diverted from Landfill (t)": round(b["landfill_diverted_t"],2),
-            })
-        st.dataframe(pd.DataFrame(rec_rows), use_container_width=True, hide_index=True)
-
     # ── TAB 4: ECONOMY ────────────────────────────────────────────────────
     with tab4:
         st.markdown('<p class="section-head">💰 In Everyday Terms — Savings Summary</p>', unsafe_allow_html=True)
@@ -3073,7 +2963,7 @@ def page_results():
         econ_analogies = render_economy_analogies(total_virgin, total_lf_save)
         if econ_analogies:
             for a in econ_analogies:
-                st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="analogy-box">{a}</div>', unsafe_allow_html=True)
         else:
             st.info("No cost savings to compare yet.")
         st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
@@ -3118,7 +3008,7 @@ def page_results():
             plant_analogies = render_plant_analogy(plant_dist, plant_cap, total_waste)
             if plant_analogies:
                 for a in plant_analogies:
-                    st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="analogy-box">{a}</div>', unsafe_allow_html=True)
             else:
                 st.info("Not enough information to compute plant analogies for this location.")
         st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
