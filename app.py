@@ -1920,7 +1920,7 @@ def page_project_info():
             locality = st.text_input("Locality / Area", placeholder="e.g., Banjara Hills, Whitefield")
             builtup = st.number_input("Built-up Area (m²)", min_value=1.0, value=1000.0, step=50.0)
         with c2:
-            ctype = st.selectbox("Project Type", ["Construction", "Demolition", "Redevelopment"])
+            ctype = st.selectbox("Project Type", ["Construction", "Demolition"])
             building_type = st.selectbox("Building Type", ["Residential", "Commercial", "Institutional"])
             num_floors = st.number_input("Number of Floors", min_value=1, value=4, step=1)
 
@@ -2838,28 +2838,7 @@ def page_results():
 
     # ── TAB 2: EMISSIONS ──────────────────────────────────────────────────
     with tab2:
-        # ── Direct results table (waste-based emissions) ────────────────
-        st.markdown('<p class="section-head">⚖️ Emissions from Estimated Waste Quantities</p>', unsafe_allow_html=True)
-        st.caption("Based on material waste tonnes from Page 3 × per-tonne LCA emission factors (CML 2001 / IFC EDGE India)")
-        em_rows = []
-        for mat, r in er.items():
-            em_rows.append({
-                "Material": mat,
-                "Qty (t)": round(r["qty_t"],2),
-                "A1–A3 (kg CO₂e)": round(r["A1A3"],1),
-                "A4 Transport": round(r["A4"],1),
-                "A5 Site": round(r["A5"],1),
-                "C1 Demolition": round(r["C1"],1),
-                "C2 Transport": round(r["C2"],1),
-                "C3 Processing": round(r["C3"],1),
-                "C4 Landfill": round(r["C4"],1),
-                "Total GWP (kg)": round(r["total_gwp"],1),
-                "AP (kg SO₂e)": round(r["AP"],3),
-                "EFW/EP (kg PO₄e)": round(r["EP"],4),
-            })
-        df_em = pd.DataFrame(em_rows)
-        st.dataframe(df_em, use_container_width=True, hide_index=True)
-
+        # ── Total Emissions ───────────────────────────────────────────────
         mc1, mc2, mc3 = st.columns(3)
         mc1.metric("Total GWP (waste-based)", f"{total_gwp:.3f} t CO₂e")
         mc2.metric("Total AP",  f"{total_ap:.2f} kg SO₂e")
@@ -2868,7 +2847,7 @@ def page_results():
 
         st.divider()
 
-        # ── GWP footprint in everyday terms ──────────────────────────────
+        # ── Analytics — everyday-terms analogies ────────────────────────
         st.markdown('<p class="section-head">🌍 In Everyday Terms — GWP Footprint</p>', unsafe_allow_html=True)
         gwp_analogies = render_gwp_footprint_analogies(total_gwp)
         if gwp_analogies:
@@ -2878,7 +2857,6 @@ def page_results():
                     f'<div class="analogy-box">{a}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
 
-        # ── Avoided emissions in everyday terms ──────────────────────────
         st.markdown('<p class="section-head">🌍 In Everyday Terms — Avoided Emissions</p>', unsafe_allow_html=True)
         em_analogies = render_emission_analogies(total_avoided)
         if em_analogies:
@@ -2889,6 +2867,41 @@ def page_results():
         else:
             st.info("No avoided emissions to compare yet — adjust end-of-life routing (recycle/reuse) to see equivalencies.")
         st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
+        st.divider()
+
+        # ── Detailed Emissions — Table 1: GWP / AP / EFW totals per material ──
+        st.markdown('<p class="section-head">⚖️ Emissions from Estimated Waste Quantities — GWP, AP & EFW Totals</p>', unsafe_allow_html=True)
+        st.caption("Based on material waste tonnes from Page 3 × per-tonne LCA emission factors (CML 2001 / IFC EDGE India)")
+        em_totals_rows = []
+        for mat, r in er.items():
+            em_totals_rows.append({
+                "Material": mat,
+                "Qty (t)": round(r["qty_t"],2),
+                "Total GWP (kg CO₂e)": round(r["total_gwp"],1),
+                "AP (kg SO₂e)": round(r["AP"],3),
+                "EFW/EP (kg PO₄e)": round(r["EP"],4),
+            })
+        df_em_totals = pd.DataFrame(em_totals_rows)
+        st.dataframe(df_em_totals, use_container_width=True, hide_index=True)
+
+        # ── Detailed Emissions — Table 2: GWP distribution stage-wise ──────
+        st.markdown('<p class="section-head">⚖️ GWP Distribution — Stage-wise (A1–A5, C1–C4)</p>', unsafe_allow_html=True)
+        em_stage_rows = []
+        for mat, r in er.items():
+            em_stage_rows.append({
+                "Material": mat,
+                "A1–A3 (kg CO₂e)": round(r["A1A3"],1),
+                "A4 Transport": round(r["A4"],1),
+                "A5 Site": round(r["A5"],1),
+                "C1 Demolition": round(r["C1"],1),
+                "C2 Transport": round(r["C2"],1),
+                "C3 Processing": round(r["C3"],1),
+                "C4 Landfill": round(r["C4"],1),
+                "Total GWP (kg)": round(r["total_gwp"],1),
+            })
+        df_em_stages = pd.DataFrame(em_stage_rows)
+        st.dataframe(df_em_stages, use_container_width=True, hide_index=True)
 
     with tab3:
         # ── Summary: circularity in everyday terms (shown first) ──
