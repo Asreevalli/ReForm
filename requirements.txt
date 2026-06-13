@@ -7,3 +7,4 @@ gspread
 google-auth
 firebase-admin
 matplotlib
+openpyxl
