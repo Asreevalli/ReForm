@@ -1074,6 +1074,18 @@ for k, v in defaults.items():
 
 def go(page): st.session_state.page = page
 
+def start_new_design():
+    """Reset project/input data for a new design while keeping saved TOPSIS scenarios."""
+    st.session_state.project          = {}
+    st.session_state.input_method      = None
+    st.session_state.waste_table       = []
+    st.session_state.emission_inputs   = {}
+    st.session_state.results           = {}
+    st.session_state.page              = 1
+    # Clear auxiliary widget state left over from the previous run
+    for k in ["mq_sel", "mq_rows", "ab_pct", "ab_last_sel", "_firestore_error"]:
+        st.session_state.pop(k, None)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PROGRESS BAR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2803,6 +2815,22 @@ def page_results():
         bldg_type  = proj.get("building_type", "Residential")
         area_m2    = proj.get("builtup_area", 1.0) or 1.0
 
+        # ── Summary: avoided emissions in everyday terms (shown first) ──
+        st.markdown('<p class="section-head">🌍 In Everyday Terms — Avoided Emissions Summary</p>', unsafe_allow_html=True)
+        st.metric("Avoided Emissions", f"{total_avoided:.2f} t CO₂e")
+        em_analogies = render_emission_analogies(total_avoided)
+        if em_analogies:
+            ac1, ac2 = st.columns(2)
+            for i, a in enumerate(em_analogies):
+                (ac1 if i % 2 == 0 else ac2).markdown(
+                    f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+        else:
+            st.info("No avoided emissions to compare yet — adjust end-of-life routing (recycle/reuse) to see equivalencies.")
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
+        st.divider()
+        st.markdown("### 📊 Detailed Emissions Results")
+
         # ── 2a: Per-m² Benchmark (Primary display) ──────────────────────
         st.markdown('<p class="section-head">📐 Environmental Impact Benchmarks per m² BUA</p>', unsafe_allow_html=True)
         if bldg_type in ("Industrial", "Infrastructure"):
@@ -2903,21 +2931,29 @@ def page_results():
         mc3.metric("Total EFW", f"{total_ep:.4f} kg PO₄e")
         st.markdown(f'<div class="source-note">Per-tonne factors: IFC EDGE India DB (2017) [S5]; CML 2001 characterisation [S8]; IPCC 2006 [S7]</div>', unsafe_allow_html=True)
 
-        # ── What does this mean in everyday terms? ──────────────────────
-        st.divider()
-        st.markdown('<p class="section-head">🌍 What does this mean? — Avoided Emissions in Everyday Terms</p>', unsafe_allow_html=True)
-        em_analogies = render_emission_analogies(total_avoided)
-        if em_analogies:
-            ac1, ac2 = st.columns(2)
-            for i, a in enumerate(em_analogies):
-                (ac1 if i % 2 == 0 else ac2).markdown(
-                    f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+    with tab3:
+        # ── Summary: circularity in everyday terms (shown first) ──
+        st.markdown('<p class="section-head">♻️ In Everyday Terms — Circularity Summary</p>', unsafe_allow_html=True)
+        score_color = "#10b981" if ca >= 0.5 else "#f59e0b" if ca >= 0.3 else "#ef4444"
+        st.markdown(f"""
+        <div style="text-align:center; background: #f0fdf4; border: 2px solid {score_color}; border-radius: 14px; padding: 24px; margin-bottom: 12px;">
+          <div style="font-size: 3rem; font-weight: 700; color: {score_color};">{ca*100:.1f}</div>
+          <div style="color: #374151;">Overall Circularity Score (out of 100)</div>
+        </div>
+        """, unsafe_allow_html=True)
+        total_recycled = sum(b["recycled_t"] for b in ben.values())
+        total_reused   = sum(b["reused_t"] for b in ben.values())
+        circ_analogies = render_circularity_analogies(total_lf_div, total_recycled, total_reused)
+        if circ_analogies:
+            for a in circ_analogies:
+                st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
         else:
-            st.info("No avoided emissions to compare yet — adjust end-of-life routing (recycle/reuse) to see equivalencies.")
+            st.info("No material recovered/diverted yet — increase recycle/reuse % on Page 4 to see equivalencies.")
         st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
 
+        st.divider()
+        st.markdown("### 📊 Detailed Circularity Results")
 
-    with tab3:
         st.markdown('<p class="section-head">Circularity Score</p>', unsafe_allow_html=True)
         st.markdown("""
         **Material Circularity Indicator (MCI) — Ellen MacArthur Foundation (2015)**
@@ -2953,19 +2989,8 @@ def page_results():
         df_circ = pd.DataFrame(circ_rows)
         st.dataframe(df_circ, use_container_width=True, hide_index=True)
 
-        col_a, col_b = st.columns([1,2])
-        with col_a:
-            score_color = "#10b981" if ca >= 0.5 else "#f59e0b" if ca >= 0.3 else "#ef4444"
-            st.markdown(f"""
-            <div style="text-align:center; background: #f0fdf4; border: 2px solid {score_color}; border-radius: 14px; padding: 24px;">
-              <div style="font-size: 3rem; font-weight: 700; color: {score_color};">{ca*100:.1f}</div>
-              <div style="color: #374151;">Overall Circularity Score</div>
-              <div style="font-size: 0.75rem; color: #9ca3af;">out of 100</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with col_b:
-            circ_chart = {mat: float(sc)*100 for mat, sc in cs.items()}
-            st.bar_chart(pd.DataFrame.from_dict({"Score": circ_chart}, orient="columns"))
+        circ_chart = {mat: float(sc)*100 for mat, sc in cs.items()}
+        st.bar_chart(pd.DataFrame.from_dict({"Score": circ_chart}, orient="columns"))
 
         # Material recovery
         st.markdown('<p class="section-head">Material Recovery Summary</p>', unsafe_allow_html=True)
@@ -2980,29 +3005,25 @@ def page_results():
             })
         st.dataframe(pd.DataFrame(rec_rows), use_container_width=True, hide_index=True)
 
-        # ── What does this mean in everyday terms? ──────────────────────
-        st.divider()
-        st.markdown('<p class="section-head">♻️ What does this mean? — Circularity in Everyday Terms</p>', unsafe_allow_html=True)
-        total_recycled = sum(b["recycled_t"] for b in ben.values())
-        total_reused   = sum(b["reused_t"] for b in ben.values())
-        circ_analogies = render_circularity_analogies(total_lf_div, total_recycled, total_reused)
-        if circ_analogies:
-            for a in circ_analogies:
-                st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
-        else:
-            st.info("No material recovered/diverted yet — increase recycle/reuse % on Page 4 to see equivalencies.")
-        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
-
     # ── TAB 4: ECONOMY ────────────────────────────────────────────────────
     with tab4:
-        st.markdown('<p class="section-head">Economic & Environmental Benefits</p>', unsafe_allow_html=True)
-
+        st.markdown('<p class="section-head">💰 In Everyday Terms — Savings Summary</p>', unsafe_allow_html=True)
         e1,e2,e3,e4 = st.columns(4)
         e1.metric("Avoided Emissions",     f"{total_avoided:.2f} t CO₂e")
         e2.metric("Virgin Material Savings", f"₹{total_virgin:,.0f}")
         e3.metric("Landfill Diverted",     f"{total_lf_div:.2f} t")
         e4.metric("Landfill Cost Saved",   f"₹{total_lf_save:,.0f}")
 
+        econ_analogies = render_economy_analogies(total_virgin, total_lf_save)
+        if econ_analogies:
+            for a in econ_analogies:
+                st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+        else:
+            st.info("No cost savings to compare yet.")
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
+        st.divider()
+        st.markdown("### 📊 Detailed Economic Results")
         st.markdown(f'<div class="source-note">Virgin material prices: CPWD DSR (2024) / state PWD SORs (2023-24). {VIRGIN_PRICE_SOURCE} | Landfill cost: {LANDFILL_COST_SOURCE}</div>', unsafe_allow_html=True)
 
         ec_rows = []
@@ -3026,24 +3047,31 @@ def page_results():
         </div>
         """, unsafe_allow_html=True)
 
-        # ── What does this mean in everyday terms? ──────────────────────
-        st.divider()
-        st.markdown('<p class="section-head">💰 What does this mean? — Savings in Everyday Terms</p>', unsafe_allow_html=True)
-        econ_analogies = render_economy_analogies(total_virgin, total_lf_save)
-        if econ_analogies:
-            for a in econ_analogies:
-                st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
-        else:
-            st.info("No cost savings to compare yet.")
-        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
-
     # ── TAB 5: RECYCLING PLANTS ───────────────────────────────────────────
     with tab5:
+        proj_city = proj.get("location", "")
+        nearest = find_nearest_plants(proj_city)
+
+        # ── Summary: nearest plant in everyday terms (shown first) ──
+        st.markdown('<p class="section-head">📍 In Everyday Terms — Nearest Plant Summary</p>', unsafe_allow_html=True)
+        if nearest:
+            nearest_plant = nearest[0]
+            st.metric("Nearest Recycling Plant", f"{nearest_plant.get('City','')} — {nearest_plant.get('Location','')}")
+            plant_dist = nearest_plant.get("Distance_km")
+            plant_cap  = nearest_plant.get("Capacity_TPD")
+            plant_analogies = render_plant_analogy(plant_dist, plant_cap, total_waste)
+            if plant_analogies:
+                for a in plant_analogies:
+                    st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+            else:
+                st.info("Not enough information to compute plant analogies for this location.")
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
+        st.divider()
+        st.markdown("### 📊 Detailed Recycling Plant Results")
         st.markdown('<p class="section-head">Nearest C&D Waste Recycling Plants in India</p>', unsafe_allow_html=True)
         st.markdown(f'<div class="source-note">Source: {PLANTS_SOURCE}. Distances calculated using Haversine great-circle formula from project city coordinates.</div>', unsafe_allow_html=True)
 
-        proj_city = proj.get("location", "")
-        nearest = find_nearest_plants(proj_city)
 
         # Build display dataframe — include Distance column if available
         has_dist = nearest and nearest[0].get("Distance_km") is not None
@@ -3067,21 +3095,6 @@ def page_results():
         df_all = pd.DataFrame(RECYCLING_PLANTS)[["City","Location","Capacity_TPD"]]
         df_all.columns = ["City", "Location", "Capacity (TPD)"]
         st.dataframe(df_all, use_container_width=True, hide_index=True)
-
-        # ── What does this mean in everyday terms? ──────────────────────
-        st.divider()
-        st.markdown('<p class="section-head">📍 What does this mean? — Nearest Plant in Everyday Terms</p>', unsafe_allow_html=True)
-        if nearest:
-            nearest_plant = nearest[0]
-            plant_dist = nearest_plant.get("Distance_km")
-            plant_cap  = nearest_plant.get("Capacity_TPD")
-            plant_analogies = render_plant_analogy(plant_dist, plant_cap, total_waste)
-            if plant_analogies:
-                for a in plant_analogies:
-                    st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
-            else:
-                st.info("Not enough information to compute plant analogies for this location.")
-        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
 
     with tab6:
         import matplotlib; matplotlib.use("Agg")
@@ -3156,8 +3169,10 @@ def page_results():
         st.success(f"Saved '{scenario_name}' — {len(st.session_state.scenarios)} design(s) saved so far.")
 
     if st.session_state.scenarios:
-        st.button(f"📊 Compare Designs / TOPSIS ({len(st.session_state.scenarios)} saved) →",
-                  type="primary", on_click=lambda: go(6))
+        ac1, ac2 = st.columns(2)
+        ac1.button("➕ Add Another Design (start new run) →", use_container_width=True, on_click=start_new_design)
+        ac2.button(f"📊 Compare Designs / TOPSIS ({len(st.session_state.scenarios)} saved) →",
+                   type="primary", use_container_width=True, on_click=lambda: go(6))
 
     st.divider()
 
@@ -3286,18 +3301,46 @@ def page_scenario_comparison():
 
     # ── Step 4: Download as Excel ─────────────────────────────────────────────
     st.markdown("#### Step 4 — Download Comparison Workbook")
-    excel_buf = BytesIO()
-    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
-        edited_df.to_excel(writer, sheet_name="Scenarios & Criteria", index=False)
-        wdf.to_excel(writer, sheet_name="Weights", index=False)
-        ranked[display_cols].to_excel(writer, sheet_name="TOPSIS Ranking", index=False)
-    excel_buf.seek(0)
-    st.download_button(
-        label="⬇️ Download Scenario Comparison (Excel)",
-        data=excel_buf,
-        file_name=f"CircularBuild_Scenario_Comparison_{str(st.session_state.project.get('name','project')).replace(' ','_')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+
+    excel_engine = None
+    for _eng in ("openpyxl", "xlsxwriter"):
+        try:
+            __import__(_eng)
+            excel_engine = _eng
+            break
+        except ImportError:
+            continue
+
+    proj_name_for_file = str(st.session_state.project.get('name','project')).replace(' ','_')
+
+    if excel_engine:
+        excel_buf = BytesIO()
+        with pd.ExcelWriter(excel_buf, engine=excel_engine) as writer:
+            edited_df.to_excel(writer, sheet_name="Scenarios & Criteria", index=False)
+            wdf.to_excel(writer, sheet_name="Weights", index=False)
+            ranked[display_cols].to_excel(writer, sheet_name="TOPSIS Ranking", index=False)
+        excel_buf.seek(0)
+        st.download_button(
+            label="⬇️ Download Scenario Comparison (Excel)",
+            data=excel_buf,
+            file_name=f"CircularBuild_Scenario_Comparison_{proj_name_for_file}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    else:
+        st.warning("⚠️ Excel export requires the `openpyxl` package, which isn't installed on this server. "
+                   "Add `openpyxl` to your `requirements.txt` to enable the Excel download. "
+                   "In the meantime, you can download the tables as CSV below.")
+        dl1, dl2, dl3 = st.columns(3)
+        dl1.download_button("⬇️ Scenarios & Criteria (CSV)",
+                             data=edited_df.to_csv(index=False).encode("utf-8"),
+                             file_name=f"Scenarios_Criteria_{proj_name_for_file}.csv", mime="text/csv")
+        dl2.download_button("⬇️ Weights (CSV)",
+                             data=wdf.to_csv(index=False).encode("utf-8"),
+                             file_name=f"Weights_{proj_name_for_file}.csv", mime="text/csv")
+        dl3.download_button("⬇️ TOPSIS Ranking (CSV)",
+                             data=ranked[display_cols].to_csv(index=False).encode("utf-8"),
+                             file_name=f"TOPSIS_Ranking_{proj_name_for_file}.csv", mime="text/csv")
+
 
     st.divider()
     cb1, cb2 = st.columns([1, 4])
