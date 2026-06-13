@@ -22,6 +22,7 @@ DATA SOURCES (all publicly accessible, peer-reviewed or institutional):
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import json
 import math
 from io import BytesIO
@@ -1064,6 +1065,7 @@ defaults = {
     "waste_table": [],       # list of {material, quantity_tonnes, unit, waste_factor}
     "emission_inputs": {},   # material → {sub_type, vehicle, distance_km, eol}
     "results": {},
+    "scenarios": [],         # list of saved design scenarios for TOPSIS comparison
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -1682,6 +1684,188 @@ def generate_pdf_report(project, waste_table, emission_results, circ_scores, cir
     return buf
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# INTERACTIVE ANALOGIES — relatable, everyday-life equivalents for results
+# ══════════════════════════════════════════════════════════════════════════════
+# All factors below are illustrative communication aids only (NOT used in any
+# LCA/MCI/TOPSIS calculation). They are derived from commonly cited reference
+# figures so non-technical stakeholders can grasp the scale of the results.
+#
+#   - CAR_KM_PER_TCO2E      : km driven by an average petrol passenger car per
+#                              tonne CO2e (~0.25 kg CO2e/km -> EPA GHG Equivalencies
+#                              Calculator methodology; IPCC 2006 road transport EF)
+#   - TREE_TCO2E_PER_YEAR   : CO2 sequestered by one mature tree in one year
+#                              (~21.77 kg CO2/yr, US EPA / Urban Forestry guidance)
+#   - HOUSEHOLD_MONTH_TCO2E : emissions from one month of an average Indian
+#                              household's grid electricity use
+#                              (~150 kWh/month x 0.716 kg CO2e/kWh, CEA 2024 grid factor)
+#   - LPG_CYLINDER_TCO2E    : CO2e from burning one 14.2 kg domestic LPG cylinder
+#                              (~3.0 kg CO2e/kg LPG, IPCC 2006 default EF)
+#   - TRUCK_CAPACITY_T      : payload of a typical 10-tonne C&D waste tipper truck
+#   - BRICK_WEIGHT_T        : weight of one standard clay brick (~3 kg, IS 1077)
+#   - CEMENT_BAG_PRICE_INR  : indicative price of one 50 kg OPC cement bag (CPWD DSR 2024)
+#   - SKILLED_WAGE_INR_DAY  : indicative skilled-mason daily wage (CPWD DSR 2024)
+#   - TRUCK_SPEED_KMH       : average road speed assumed for a loaded C&D waste truck
+ANALOGY_SOURCE = ("Illustrative equivalencies for communication only — derived from "
+                  "EPA GHG Equivalencies methodology, CEA (2024) grid factor, IPCC (2006) "
+                  "transport EFs, IS 1077 brick weight, and CPWD DSR (2024) rates. "
+                  "Not used in any LCA/MCI/TOPSIS computation.")
+
+CAR_KM_PER_TCO2E      = 4000.0
+TREE_TCO2E_PER_YEAR   = 0.0217
+HOUSEHOLD_MONTH_TCO2E = 0.1074
+LPG_CYLINDER_TCO2E    = 0.0426
+TRUCK_CAPACITY_T      = 10.0
+BRICK_WEIGHT_T        = 0.003
+CEMENT_BAG_PRICE_INR  = 400.0
+SKILLED_WAGE_INR_DAY  = 800.0
+TRUCK_SPEED_KMH       = 40.0
+
+
+def render_emission_analogies(avoided_tco2e):
+    """Return list of analogy strings for avoided GHG emissions (tonnes CO2e)."""
+    if avoided_tco2e <= 0:
+        return []
+    car_km   = avoided_tco2e * CAR_KM_PER_TCO2E
+    trees    = avoided_tco2e / TREE_TCO2E_PER_YEAR
+    hh_month = avoided_tco2e / HOUSEHOLD_MONTH_TCO2E
+    lpg      = avoided_tco2e / LPG_CYLINDER_TCO2E
+    return [
+        f"🚗 Equivalent to **not driving a car for {car_km:,.0f} km** (~{car_km/12000:,.1f} years for an average commuter)",
+        f"🌳 Equivalent to the **CO₂ absorbed by ~{trees:,.0f} mature trees in one year**",
+        f"🏠 Equivalent to **{hh_month:,.0f} months of an average Indian household's electricity emissions**",
+        f"🔥 Equivalent to the emissions from burning **~{lpg:,.0f} domestic LPG cylinders**",
+    ]
+
+
+def render_circularity_analogies(landfill_diverted_t, recycled_t, reused_t):
+    """Return list of analogy strings for diverted/recycled/reused material (tonnes)."""
+    items = []
+    if landfill_diverted_t > 0:
+        trucks = landfill_diverted_t / TRUCK_CAPACITY_T
+        items.append(f"🚛 **{landfill_diverted_t:,.1f} t** diverted from landfill ≈ **{trucks:,.1f} ten-tonne truckloads** that never go to the dumpsite")
+    recovered = recycled_t + reused_t
+    if recovered > 0:
+        bricks = recovered / BRICK_WEIGHT_T
+        items.append(f"🧱 **{recovered:,.1f} t** of material recycled/reused ≈ the weight of **~{bricks:,.0f} standard bricks**")
+    return items
+
+
+def render_economy_analogies(virgin_savings_inr, lf_save_inr):
+    """Return list of analogy strings for cost savings (INR)."""
+    items = []
+    if virgin_savings_inr > 0:
+        bags = virgin_savings_inr / CEMENT_BAG_PRICE_INR
+        items.append(f"🧰 Virgin material savings of **₹{virgin_savings_inr:,.0f}** ≈ the cost of **~{bags:,.0f} bags of cement** (50 kg, @₹{CEMENT_BAG_PRICE_INR:.0f}/bag)")
+    total = virgin_savings_inr + lf_save_inr
+    if total > 0:
+        wage_days = total / SKILLED_WAGE_INR_DAY
+        items.append(f"👷 Combined savings of **₹{total:,.0f}** ≈ **~{wage_days:,.0f} days** of a skilled mason's wages (@₹{SKILLED_WAGE_INR_DAY:.0f}/day)")
+    return items
+
+
+def render_plant_analogy(distance_km, capacity_tpd, total_waste_t):
+    """Return list of analogy strings for the nearest recycling plant."""
+    items = []
+    if distance_km is not None:
+        hours = distance_km / TRUCK_SPEED_KMH
+        items.append(f"🛣️ At **{distance_km:.0f} km**, a loaded truck would take roughly **{hours:.1f} hours** to reach this plant (@{TRUCK_SPEED_KMH:.0f} km/h)")
+    if capacity_tpd and total_waste_t:
+        days = total_waste_t / capacity_tpd
+        if days < 1:
+            items.append(f"⚙️ This plant (capacity {capacity_tpd:,.0f} t/day) could process your entire **{total_waste_t:,.1f} t** of waste in **under a day**")
+        else:
+            items.append(f"⚙️ This plant (capacity {capacity_tpd:,.0f} t/day) could process your entire **{total_waste_t:,.1f} t** of waste in **~{days:.1f} days**")
+    return items
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TOPSIS MULTI-CRITERIA DECISION ANALYSIS — for comparing multiple design scenarios
+# ══════════════════════════════════════════════════════════════════════════════
+TOPSIS_CRITERIA = [
+    # (column label, direction)  direction: "benefit" = higher is better, "cost" = lower is better
+    ("GWP (t CO2e)",                     "cost"),
+    ("Circularity Score (MCI, 0-100)",   "benefit"),
+    ("Acidification Potential (kg SO2e)", "cost"),
+    ("Eutrophication Potential (kg PO4e)", "cost"),
+    ("Net Landfill Waste (t)",           "cost"),
+    ("Landfill Diverted (t)",            "benefit"),
+    ("Virgin Material Savings (INR)",    "benefit"),
+    ("Landfill Cost Saved (INR)",        "benefit"),
+]
+
+
+def scenario_from_results(name, res):
+    """Extract the 8 TOPSIS criteria values from a results dict for a saved design."""
+    er  = res["emission_results"]
+    ca  = res["circ_aggregate"]
+    ben = res["benefits"]
+    total_gwp     = sum(r["total_gwp"] for r in er.values()) / 1000.0
+    total_ap      = sum(r["AP"] for r in er.values())
+    total_ep      = sum(r["EP"] for r in er.values())
+    total_lf_t    = sum(b["landfill_t"] for b in ben.values())
+    total_lf_div  = sum(b["landfill_diverted_t"] for b in ben.values())
+    total_virgin  = sum(b["virgin_material_savings_inr"] for b in ben.values())
+    total_lf_save = sum(b["landfill_cost_saved_inr"] for b in ben.values())
+    return {
+        "Design": name,
+        "GWP (t CO2e)": round(total_gwp, 3),
+        "Circularity Score (MCI, 0-100)": round(ca * 100, 2),
+        "Acidification Potential (kg SO2e)": round(total_ap, 3),
+        "Eutrophication Potential (kg PO4e)": round(total_ep, 5),
+        "Net Landfill Waste (t)": round(total_lf_t, 3),
+        "Landfill Diverted (t)": round(total_lf_div, 3),
+        "Virgin Material Savings (INR)": round(total_virgin, 0),
+        "Landfill Cost Saved (INR)": round(total_lf_save, 0),
+    }
+
+
+def compute_topsis(df, weights):
+    """
+    df: DataFrame with a 'Design' column plus the 8 TOPSIS_CRITERIA columns.
+    weights: dict {criterion_label: weight}, need not sum to 1 (auto-normalised).
+    Returns df with added columns: Closeness Score, Rank.
+    """
+    crit_cols = [c for c, _ in TOPSIS_CRITERIA]
+    X = df[crit_cols].astype(float).copy()
+
+    # Avoid divide-by-zero for all-zero columns
+    denom = np.sqrt((X ** 2).sum())
+    denom = denom.replace(0, 1)
+    norm = X / denom
+
+    w = np.array([weights.get(c, 0.0) for c in crit_cols], dtype=float)
+    if w.sum() == 0:
+        w = np.ones(len(crit_cols))
+    w = w / w.sum()
+
+    weighted = norm * w
+
+    ideal_best, ideal_worst = {}, {}
+    for c, direction in TOPSIS_CRITERIA:
+        col = weighted[c]
+        if direction == "benefit":
+            ideal_best[c]  = col.max()
+            ideal_worst[c] = col.min()
+        else:
+            ideal_best[c]  = col.min()
+            ideal_worst[c] = col.max()
+    ideal_best  = pd.Series(ideal_best)
+    ideal_worst = pd.Series(ideal_worst)
+
+    dist_best  = np.sqrt(((weighted - ideal_best) ** 2).sum(axis=1))
+    dist_worst = np.sqrt(((weighted - ideal_worst) ** 2).sum(axis=1))
+
+    denom2 = (dist_best + dist_worst).replace(0, 1)
+    closeness = dist_worst / denom2
+
+    out = df.copy()
+    out["Closeness Score"] = closeness.round(4)
+    out["Rank"] = out["Closeness Score"].rank(ascending=False, method="min").astype(int)
+    out = out.sort_values("Rank").reset_index(drop=True)
+    return out
+
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 1 — PROJECT INFO
@@ -1794,6 +1978,20 @@ def page_waste_estimation():
         "Plastic":           {"Construction": 5.0,  "Demolition": 80.0},
         "Glass":             {"Construction": 4.0,  "Demolition": 80.0},
         "Others":            {"Construction": 10.0, "Demolition": 80.0},
+    }
+    # Report reference text shown against the asterisk for each material's
+    # pre-filled default waste %. Mirrors CSE (2020) "Another Brick off the
+    # Wall" Table 4 (p.30) wastage-rate ranges used to derive DEFAULT_WF above.
+    WASTE_PCT_REFERENCE = {
+        "Concrete":         "As per report, Concrete waste = 5% (Construction) / 100% (Demolition) — CSE (2020) Table 4, p.30",
+        "Brick/Masonry":    "As per report, Brick/Masonry waste = 8% (Construction) / 100% (Demolition) — CSE (2020) Table 4, p.30",
+        "Soil/Sand/Gravel": "As per report, Soil/Sand/Gravel waste = 10% (Construction) / 100% (Demolition) — CSE (2020) Table 4, p.30",
+        "Steel/Metal":      "As per report, Steel/Metal waste = 3% (Construction) / 85% (Demolition) — CSE (2020) Table 4, p.30",
+        "Wood/Timber":      "As per report, Wood/Timber waste = 12% (Construction) / 70% (Demolition) — CSE (2020) Table 4, p.30",
+        "Bitumen":          "As per report, Bitumen waste = 5% (Construction) / 80% (Demolition) — CSE (2020) Table 4, p.30",
+        "Plastic":          "As per report, Plastic waste = 5% (Construction) / 80% (Demolition) — CSE (2020) Table 4, p.30",
+        "Glass":            "As per report, Glass waste = 4% (Construction) / 80% (Demolition) — CSE (2020) Table 4, p.30",
+        "Others":           "As per report, Others waste = 10% (Construction) / 80% (Demolition) — CSE (2020) Table 4, p.30",
     }
     DENSITY = {"Concrete": 2.4, "Brick/Masonry": 1.80, "Soil/Sand/Gravel": 1.7,
                "Steel/Metal": 7.85, "Wood/Timber": 0.7, "Bitumen": 2.3,
@@ -1973,7 +2171,7 @@ def page_waste_estimation():
                 hdr[0].markdown("**Sub-material / Grade**")
                 hdr[1].markdown("**Quantity**")
                 hdr[2].markdown("**Unit**")
-                hdr[3].markdown("**Waste %**")
+                hdr[3].markdown("**Waste %***")
                 hdr[4].markdown("**Del**")
 
                 rows_to_delete = []
@@ -2023,6 +2221,8 @@ def page_waste_estimation():
                     cat_waste += q_t * wf
                 if cat_waste > 0:
                     st.caption(f"↳ Total waste from {mat}: **{cat_waste:.3f} t**")
+
+                st.caption(f"*{WASTE_PCT_REFERENCE.get(mat, '')}")
 
             st.session_state.mq_rows[mat] = rows
 
@@ -2703,7 +2903,20 @@ def page_results():
         mc3.metric("Total EFW", f"{total_ep:.4f} kg PO₄e")
         st.markdown(f'<div class="source-note">Per-tonne factors: IFC EDGE India DB (2017) [S5]; CML 2001 characterisation [S8]; IPCC 2006 [S7]</div>', unsafe_allow_html=True)
 
-    # ── TAB 3: CIRCULARITY ────────────────────────────────────────────────
+        # ── What does this mean in everyday terms? ──────────────────────
+        st.divider()
+        st.markdown('<p class="section-head">🌍 What does this mean? — Avoided Emissions in Everyday Terms</p>', unsafe_allow_html=True)
+        em_analogies = render_emission_analogies(total_avoided)
+        if em_analogies:
+            ac1, ac2 = st.columns(2)
+            for i, a in enumerate(em_analogies):
+                (ac1 if i % 2 == 0 else ac2).markdown(
+                    f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+        else:
+            st.info("No avoided emissions to compare yet — adjust end-of-life routing (recycle/reuse) to see equivalencies.")
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
+
     with tab3:
         st.markdown('<p class="section-head">Circularity Score</p>', unsafe_allow_html=True)
         st.markdown("""
@@ -2767,6 +2980,19 @@ def page_results():
             })
         st.dataframe(pd.DataFrame(rec_rows), use_container_width=True, hide_index=True)
 
+        # ── What does this mean in everyday terms? ──────────────────────
+        st.divider()
+        st.markdown('<p class="section-head">♻️ What does this mean? — Circularity in Everyday Terms</p>', unsafe_allow_html=True)
+        total_recycled = sum(b["recycled_t"] for b in ben.values())
+        total_reused   = sum(b["reused_t"] for b in ben.values())
+        circ_analogies = render_circularity_analogies(total_lf_div, total_recycled, total_reused)
+        if circ_analogies:
+            for a in circ_analogies:
+                st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+        else:
+            st.info("No material recovered/diverted yet — increase recycle/reuse % on Page 4 to see equivalencies.")
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
     # ── TAB 4: ECONOMY ────────────────────────────────────────────────────
     with tab4:
         st.markdown('<p class="section-head">Economic & Environmental Benefits</p>', unsafe_allow_html=True)
@@ -2800,6 +3026,17 @@ def page_results():
         </div>
         """, unsafe_allow_html=True)
 
+        # ── What does this mean in everyday terms? ──────────────────────
+        st.divider()
+        st.markdown('<p class="section-head">💰 What does this mean? — Savings in Everyday Terms</p>', unsafe_allow_html=True)
+        econ_analogies = render_economy_analogies(total_virgin, total_lf_save)
+        if econ_analogies:
+            for a in econ_analogies:
+                st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+        else:
+            st.info("No cost savings to compare yet.")
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
+
     # ── TAB 5: RECYCLING PLANTS ───────────────────────────────────────────
     with tab5:
         st.markdown('<p class="section-head">Nearest C&D Waste Recycling Plants in India</p>', unsafe_allow_html=True)
@@ -2830,6 +3067,21 @@ def page_results():
         df_all = pd.DataFrame(RECYCLING_PLANTS)[["City","Location","Capacity_TPD"]]
         df_all.columns = ["City", "Location", "Capacity (TPD)"]
         st.dataframe(df_all, use_container_width=True, hide_index=True)
+
+        # ── What does this mean in everyday terms? ──────────────────────
+        st.divider()
+        st.markdown('<p class="section-head">📍 What does this mean? — Nearest Plant in Everyday Terms</p>', unsafe_allow_html=True)
+        if nearest:
+            nearest_plant = nearest[0]
+            plant_dist = nearest_plant.get("Distance_km")
+            plant_cap  = nearest_plant.get("Capacity_TPD")
+            plant_analogies = render_plant_analogy(plant_dist, plant_cap, total_waste)
+            if plant_analogies:
+                for a in plant_analogies:
+                    st.markdown(f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+            else:
+                st.info("Not enough information to compute plant analogies for this location.")
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
 
     with tab6:
         import matplotlib; matplotlib.use("Agg")
@@ -2893,6 +3145,22 @@ def page_results():
 
     st.divider()
 
+    # ── SAVE AS DESIGN SCENARIO (for TOPSIS comparison) ─────────────────────
+    st.markdown("### 🧮 Save This Design for Comparison")
+    st.caption("Save the results of this design as a scenario, then compare multiple designs side-by-side using TOPSIS multi-criteria ranking.")
+    sc1, sc2 = st.columns([3, 1])
+    default_name = f"{proj.get('name','Design')} — Option {len(st.session_state.scenarios) + 1}"
+    scenario_name = sc1.text_input("Design / Scenario name", value=default_name, key="scenario_name_input")
+    if sc2.button("💾 Save Design", use_container_width=True):
+        st.session_state.scenarios.append(scenario_from_results(scenario_name, res))
+        st.success(f"Saved '{scenario_name}' — {len(st.session_state.scenarios)} design(s) saved so far.")
+
+    if st.session_state.scenarios:
+        st.button(f"📊 Compare Designs / TOPSIS ({len(st.session_state.scenarios)} saved) →",
+                  type="primary", on_click=lambda: go(6))
+
+    st.divider()
+
     # ── PDF DOWNLOAD ──────────────────────────────────────────────────────
     st.markdown("### 📄 Download Report")
     if st.button("Generate PDF Report", type="primary"):
@@ -2911,8 +3179,134 @@ def page_results():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ROUTER
+# PAGE 6 — DESIGN COMPARISON (TOPSIS MULTI-CRITERIA ANALYSIS)
 # ══════════════════════════════════════════════════════════════════════════════
+def page_scenario_comparison():
+    st.markdown('<p class="page-title">Design Comparison — TOPSIS Multi-Criteria Analysis</p>', unsafe_allow_html=True)
+    st.markdown('<p class="page-sub">Compare multiple design scenarios (varying material choice, EOL routing, recycling rates, etc.) and rank them using TOPSIS with adjustable criteria weights.</p>', unsafe_allow_html=True)
+
+    if not st.session_state.scenarios:
+        st.info("No design scenarios saved yet. Go to **Results** and click **Save Design** after running an estimation for each design variant you want to compare. You can also add rows manually in the table below.")
+        scen_df = pd.DataFrame(columns=["Design"] + [c for c, _ in TOPSIS_CRITERIA])
+    else:
+        scen_df = pd.DataFrame(st.session_state.scenarios)
+
+    crit_cols = [c for c, _ in TOPSIS_CRITERIA]
+    dir_map   = {c: d for c, d in TOPSIS_CRITERIA}
+
+    # ── Step 1: Editable scenario / criteria table ──────────────────────────
+    st.markdown("#### Step 1 — Design Scenarios & Criteria Values")
+    st.caption("Add, edit, or remove design rows directly. Each row is one design alternative (e.g. OPC vs GGBS concrete, different EOL recycling rates, AAC vs fly-ash brick, etc.).")
+
+    col_cfg = {"Design": st.column_config.TextColumn("Design", required=True)}
+    for c, d in TOPSIS_CRITERIA:
+        col_cfg[c] = st.column_config.NumberColumn(
+            f"{c} {'↑ benefit' if d=='benefit' else '↓ cost'}", format="%.3f")
+
+    edited_df = st.data_editor(
+        scen_df, num_rows="dynamic", use_container_width=True,
+        column_config=col_cfg, key="topsis_editor"
+    )
+
+    # Clean: drop rows without a design name or with any missing numeric value
+    edited_df = edited_df.dropna(subset=["Design"])
+    edited_df = edited_df[edited_df["Design"].astype(str).str.strip() != ""]
+    for c in crit_cols:
+        if c not in edited_df.columns:
+            edited_df[c] = 0.0
+        edited_df[c] = pd.to_numeric(edited_df[c], errors="coerce").fillna(0.0)
+
+    # Persist edits back to session state (so it survives navigation)
+    st.session_state.scenarios = edited_df.to_dict("records")
+
+    if len(edited_df) < 2:
+        st.warning("⚠️ Add at least **two** design scenarios to compute a TOPSIS ranking.")
+        st.button("← Back to Results", on_click=lambda: go(5))
+        return
+
+    st.divider()
+
+    # ── Step 2: Dynamic weights ──────────────────────────────────────────────
+    st.markdown("#### Step 2 — Set Criteria Weights")
+    st.caption("Adjust the relative importance (0–1) of each criterion. Weights are auto-normalised to sum to 1 — relative values matter, not the absolute numbers. ↑ benefit = higher is better; ↓ cost = lower is better.")
+
+    if "topsis_weights" not in st.session_state or set(st.session_state.topsis_weights.keys()) != set(crit_cols):
+        st.session_state.topsis_weights = {c: round(1.0 / len(crit_cols), 3) for c in crit_cols}
+
+    rcol1, rcol2 = st.columns([4, 1])
+    with rcol2:
+        if st.button("↺ Reset to Equal Weights", use_container_width=True):
+            st.session_state.topsis_weights = {c: round(1.0 / len(crit_cols), 3) for c in crit_cols}
+            st.rerun()
+
+    wcols = st.columns(4)
+    for i, (c, d) in enumerate(TOPSIS_CRITERIA):
+        with wcols[i % 4]:
+            st.session_state.topsis_weights[c] = st.slider(
+                f"{c}\n({'↑ benefit' if d=='benefit' else '↓ cost'})",
+                min_value=0.0, max_value=1.0,
+                value=float(st.session_state.topsis_weights.get(c, 1.0/len(crit_cols))),
+                step=0.01, key=f"topsis_w_{i}")
+
+    raw_sum = sum(st.session_state.topsis_weights.values())
+    norm_weights = ({c: round(v / raw_sum, 3) for c, v in st.session_state.topsis_weights.items()}
+                    if raw_sum > 0 else {c: round(1.0/len(crit_cols), 3) for c in crit_cols})
+
+    wdf = pd.DataFrame([{"Criterion": c, "Direction": ("↑ benefit" if d=="benefit" else "↓ cost"),
+                          "Raw Weight": round(st.session_state.topsis_weights[c], 3),
+                          "Normalised Weight (Σ=1)": norm_weights[c]}
+                         for c, d in TOPSIS_CRITERIA])
+    st.dataframe(wdf, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Step 3: TOPSIS ranking ────────────────────────────────────────────────
+    st.markdown("#### Step 3 — TOPSIS Ranking")
+    ranked = compute_topsis(edited_df, norm_weights)
+
+    display_cols = ["Rank", "Design"] + crit_cols + ["Closeness Score"]
+    st.dataframe(ranked[display_cols], use_container_width=True, hide_index=True)
+
+    best = ranked.iloc[0]
+    st.success(f"🏆 **Best-performing design (current weights): {best['Design']}** — Closeness Score = {best['Closeness Score']:.4f}")
+
+    st.bar_chart(ranked.set_index("Design")["Closeness Score"])
+
+    st.markdown("""
+    <div class="source-note">
+    <b>TOPSIS method:</b> Technique for Order of Preference by Similarity to Ideal Solution (Hwang & Yoon, 1981).
+    Criteria values are vector-normalised, weighted, and compared to the ideal-best and ideal-worst solutions;
+    the Closeness Score (0–1) reflects relative distance from the worst case — higher is better.
+    Criteria set follows the CircularBuild MTP evaluation framework (GWP, MCI, AP, EP, net landfill waste,
+    landfill diverted, virgin material savings, landfill cost saved).
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Step 4: Download as Excel ─────────────────────────────────────────────
+    st.markdown("#### Step 4 — Download Comparison Workbook")
+    excel_buf = BytesIO()
+    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+        edited_df.to_excel(writer, sheet_name="Scenarios & Criteria", index=False)
+        wdf.to_excel(writer, sheet_name="Weights", index=False)
+        ranked[display_cols].to_excel(writer, sheet_name="TOPSIS Ranking", index=False)
+    excel_buf.seek(0)
+    st.download_button(
+        label="⬇️ Download Scenario Comparison (Excel)",
+        data=excel_buf,
+        file_name=f"CircularBuild_Scenario_Comparison_{str(st.session_state.project.get('name','project')).replace(' ','_')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    st.divider()
+    cb1, cb2 = st.columns([1, 4])
+    cb1.button("← Back to Results", on_click=lambda: go(5))
+    if cb2.button("🗑️ Clear All Saved Designs"):
+        st.session_state.scenarios = []
+        st.rerun()
+
+
 show_progress()
 page = st.session_state.page
 
@@ -2921,3 +3315,4 @@ elif page == 2: page_data_input()
 elif page == 3: page_waste_estimation()
 elif page == 4: page_emissions_eol()
 elif page == 5: page_results()
+elif page == 6: page_scenario_comparison()
