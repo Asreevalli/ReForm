@@ -1750,6 +1750,22 @@ def render_emission_analogies(avoided_tco2e):
     ]
 
 
+def render_gwp_footprint_analogies(total_tco2e):
+    """Return list of analogy strings for the total GWP footprint (tonnes CO2e)."""
+    if total_tco2e <= 0:
+        return []
+    car_km   = total_tco2e * CAR_KM_PER_TCO2E
+    trees    = total_tco2e / TREE_TCO2E_PER_YEAR
+    hh_month = total_tco2e / HOUSEHOLD_MONTH_TCO2E
+    lpg      = total_tco2e / LPG_CYLINDER_TCO2E
+    return [
+        f"🚗 This footprint is equivalent to **driving a car {car_km:,.0f} km** (~{car_km/12000:,.1f} years for an average commuter)",
+        f"🌳 Offsetting it would need **~{trees:,.0f} mature trees growing for one year**",
+        f"🏠 Equivalent to **{hh_month:,.0f} months of an average Indian household's electricity emissions**",
+        f"🔥 Equivalent to the emissions from burning **~{lpg:,.0f} domestic LPG cylinders**",
+    ]
+
+
 def render_circularity_analogies(landfill_diverted_t, recycled_t, reused_t):
     """Return list of analogy strings for diverted/recycled/reused material (tonnes)."""
     items = []
@@ -2628,6 +2644,16 @@ def page_emissions_eol():
 
     st.markdown(f'<div class="source-note">📚 GWP factors: {GWP_SOURCE} | Environmental factors: {ENV_SOURCE}</div>', unsafe_allow_html=True)
 
+    # ── Quick waste summary table (reference — full breakdown is on Results) ──
+    st.markdown("#### Waste Summary (from Page 3)")
+    waste_summary_df = pd.DataFrame([
+        {"Material": row["material"], "Waste (tonnes)": round(row["waste_tonnes"], 3)}
+        for row in waste_table
+    ])
+    st.dataframe(waste_summary_df, use_container_width=True, hide_index=True)
+    st.caption(f"Total: {sum(r['waste_tonnes'] for r in waste_table):,.3f} tonnes — set transport, sub-type and end-of-life routing for each material below.")
+    st.divider()
+
     for row in waste_table:
         mat = row["material"]
         qty_t = row["waste_tonnes"]
@@ -2757,6 +2783,17 @@ def page_results():
     m3.metric("Circularity Score",        f"{ca*100:.1f} / 100")
     m4.metric("Avoided Emissions",        f"{total_avoided:.2f} t CO2e")
 
+    # ── Quick takeaway — one-line analogy per headline number ──────────────
+    _gwp_a = render_gwp_footprint_analogies(total_gwp)
+    _avoid_a = render_emission_analogies(total_avoided)
+    _takeaways = []
+    if _gwp_a:
+        _takeaways.append(_gwp_a[0])
+    if _avoid_a:
+        _takeaways.append(_avoid_a[0])
+    if _takeaways:
+        st.caption("⚡ Quick takeaway: " + "  |  ".join(_takeaways) + "  *(see each tab for more)*")
+
     st.divider()
 
     # ── TABS ──────────────────────────────────────────────────────────────
@@ -2814,6 +2851,25 @@ def page_results():
         pt_key = "Demolition" if proj_type in ["Demolition","Redevelopment"] else "Construction"
         bldg_type  = proj.get("building_type", "Residential")
         area_m2    = proj.get("builtup_area", 1.0) or 1.0
+
+        # ── Quick waste summary table (reference — full breakdown is in Waste tab) ──
+        st.markdown("#### Waste Summary")
+        waste_summary_df2 = pd.DataFrame([
+            {"Material": mat, "Waste (tonnes)": round(r["qty_t"], 3)}
+            for mat, r in er.items()
+        ])
+        st.dataframe(waste_summary_df2, use_container_width=True, hide_index=True)
+
+        # ── Summary: GWP footprint in everyday terms (shown first) ──
+        st.markdown('<p class="section-head">🌍 In Everyday Terms — GWP Footprint Summary</p>', unsafe_allow_html=True)
+        st.metric("Total GWP", f"{total_gwp:.2f} t CO₂e")
+        gwp_analogies = render_gwp_footprint_analogies(total_gwp)
+        if gwp_analogies:
+            ac1, ac2 = st.columns(2)
+            for i, a in enumerate(gwp_analogies):
+                (ac1 if i % 2 == 0 else ac2).markdown(
+                    f'<div class="info-box">{a}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="source-note">{ANALOGY_SOURCE}</div>', unsafe_allow_html=True)
 
         # ── Summary: avoided emissions in everyday terms (shown first) ──
         st.markdown('<p class="section-head">🌍 In Everyday Terms — Avoided Emissions Summary</p>', unsafe_allow_html=True)
@@ -3169,6 +3225,15 @@ def page_results():
         st.success(f"Saved '{scenario_name}' — {len(st.session_state.scenarios)} design(s) saved so far.")
 
     if st.session_state.scenarios:
+        st.markdown("**Designs saved so far:**")
+        saved_list_df = pd.DataFrame([
+            {"#": i + 1, "Design": s.get("Design", ""),
+             "GWP (t CO2e)": s.get("GWP (t CO2e)"),
+             "Circularity Score (MCI, 0-100)": s.get("Circularity Score (MCI, 0-100)")}
+            for i, s in enumerate(st.session_state.scenarios)
+        ])
+        st.dataframe(saved_list_df, use_container_width=True, hide_index=True)
+
         ac1, ac2 = st.columns(2)
         ac1.button("➕ Add Another Design (start new run) →", use_container_width=True, on_click=start_new_design)
         ac2.button(f"📊 Compare Designs / TOPSIS ({len(st.session_state.scenarios)} saved) →",
