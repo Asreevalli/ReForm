@@ -519,12 +519,14 @@ WASTE_RATES = {
     "Construction": {
         "Residential":   {"rate_kg_m2": 40.0,  "range": "20–60"},   # CSE (2020) p.30 range midpoint
         "Commercial":    {"rate_kg_m2": 50.0,  "range": "30–70"},
+        "Institutional": {"rate_kg_m2": 50.0,  "range": "30–70"},   # treated same as Commercial (CSE 2020)
         "Industrial":    {"rate_kg_m2": 45.0,  "range": "25–65"},
         "Infrastructure":{"rate_kg_m2": 60.0,  "range": "40–80"},
     },
     "Demolition": {
         "Residential":   {"rate_kg_m2": 350.0, "range": "300–500"}, # CSE 2020 p.30
         "Commercial":    {"rate_kg_m2": 400.0, "range": "300–500"},
+        "Institutional": {"rate_kg_m2": 400.0, "range": "300–500"}, # treated same as Commercial (CSE 2020)
         "Industrial":    {"rate_kg_m2": 420.0, "range": "300–500"},
         "Infrastructure":{"rate_kg_m2": 380.0, "range": "300–500"},
     },
