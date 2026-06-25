@@ -914,7 +914,7 @@ RECYCLING_PLANTS = [
     {"City": "Gurugram",    "Location": "Basai",               "Capacity_TPD": 300,  "Lat": 28.4595, "Lon": 76.9859},
     {"City": "Ghaziabad",   "Location": "Ghaziabad",           "Capacity_TPD": 150,  "Lat": 28.6692, "Lon": 77.4538},
     {"City": "Thane",       "Location": "Daighar",             "Capacity_TPD": 300,  "Lat": 19.2183, "Lon": 72.9781},
-    {"City": "Dahisar",     "Location": "Dahisar",             "Capacity_TPD": 600,  "Lat": 19.2426, "Lon": 72.8740}
+    {"City": "Dahisar",     "Location": "Dahisar",             "Capacity_TPD": 600,  "Lat": 19.2426, "Lon": 72.8740},
     {"City": "Indore",      "Location": "Devguradia",          "Capacity_TPD": 100,  "Lat": 22.6797, "Lon": 75.8070},
     {"City": "Hyderabad",   "Location": "Jeetimedla",          "Capacity_TPD": 300,  "Lat": 17.4399, "Lon": 78.4983},
     {"City": "Bengaluru",   "Location": "Chikkajala",          "Capacity_TPD": 1000, "Lat": 13.1100, "Lon": 77.5900},
